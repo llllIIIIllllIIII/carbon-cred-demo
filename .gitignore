@@ -11,3 +11,5 @@ node_modules/
 .DS_Store
 dist/
 *.log
+# markitdown 由 docs/*.html 轉出的衍生檔(正本仍為 .html)
+docs/*.html.md

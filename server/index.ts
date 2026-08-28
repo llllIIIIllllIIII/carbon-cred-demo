@@ -4,6 +4,8 @@ import { pathToFileURL } from 'node:url';
 import Fastify from 'fastify';
 import { ROOT, openDbIfExists } from './db';
 import { readStatusListToken, STATUS_MEDIA_TYPE, STATUS_LIST_NAMES, type StatusListName } from './statuslist';
+import { registerIssueRoutes } from './routes/issue';
+import { registerAggregateRoutes } from './routes/aggregate';
 
 const MANIFEST_PATH = path.join(ROOT, 'data', 'vlei', 'manifest.json');
 
@@ -46,6 +48,9 @@ export function buildServer() {
     }
     return reply.type(STATUS_MEDIA_TYPE).send(token);
   });
+
+  registerIssueRoutes(app);
+  registerAggregateRoutes(app);
 
   return app;
 }

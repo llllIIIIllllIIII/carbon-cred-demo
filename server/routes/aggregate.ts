@@ -1,0 +1,80 @@
+/**
+ * 幕 2 路由(架構決策 §4):
+ *   POST /api/aggregate — 讀該案上游 pcf_upstream(未簽發則依幕 1 邏輯先簽)→ 以持有者身分
+ *     消費前先驗上游簽章(manifest 公鑰,驗不過回 CODES.CREDENTIAL_SIG_INVALID,不得跳過)→
+ *     程式計算聚合(規格v2 §4.3)→ 經 server/keys.ts 載入鴻鋼 sandbox LE AID 鑰簽 pcf_aggregate →
+ *     入 credentials 表。pcf_aggregate 不含上游任何明細欄位,precursor_ref 僅留上游憑證
+ *     id + sha256 hash(藍圖:150)。
+ * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / issuePcfAggregate 取得。
+ */
+import type { FastifyInstance } from 'fastify';
+import { openDb } from '../db';
+import { issuePcfAggregate, UpstreamVerificationError } from '../creds/pcfAggregate';
+import { upsertCredential } from '../creds/store';
+import type { PcfAggregateCaseId } from '../../shared/types';
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+export function registerAggregateRoutes(app: FastifyInstance): void {
+  app.post('/api/aggregate', async (req, reply) => {
+    const body = (req.body ?? {}) as { case_id?: string };
+    const caseId: PcfAggregateCaseId = body.case_id === 'B' ? 'B' : 'A';
+
+    const db = openDb();
+    try {
+      let issuance: Awaited<ReturnType<typeof issuePcfAggregate>>;
+      try {
+        issuance = await issuePcfAggregate(db, caseId);
+      } catch (e) {
+        if (e instanceof UpstreamVerificationError) {
+          return reply.code(502).send({ error: e.message, reason_code: e.reasonCode });
+        }
+        return reply.code(500).send({ error: errorMessage(e) });
+      }
+
+      try {
+        upsertCredential(db, {
+          id: issuance.id,
+          type: 'pcf_aggregate',
+          caseId: issuance.caseId,
+          issuerParty: issuance.issuerParty,
+          holderParty: issuance.holderParty,
+          sdJwt: issuance.sdJwt,
+          payload: issuance.payload,
+          statusIdx: issuance.statusIdx,
+          statusUri: issuance.statusUri,
+          issuedAt: issuance.issuedAt,
+          validFrom: issuance.validFrom,
+          validUntil: issuance.validUntil,
+        });
+      } catch (e) {
+        return reply.code(500).send({ error: `DB 寫入失敗:${errorMessage(e)}(先跑 make setup / make seed)` });
+      }
+
+      return {
+        id: issuance.id,
+        case_id: issuance.caseId,
+        sd_jwt: issuance.sdJwt,
+        claims: issuance.payload,
+        breakdown: {
+          precursor_contribution_tco2e_per_t: issuance.breakdown.precursorContribution,
+          self_direct_tco2e_per_t: issuance.breakdown.selfDirect,
+          self_indirect_tco2e_per_t: issuance.breakdown.selfIndirect,
+          carbon_total_tco2e_per_t: issuance.breakdown.total,
+        },
+        precursor_ref: issuance.precursorRef,
+        issued_at: issuance.issuedAt,
+        valid_from: issuance.validFrom,
+        valid_until: issuance.validUntil,
+        issuer_party: issuance.issuerParty,
+        holder_party: issuance.holderParty,
+        // L3 修正:合約碳排門檻改由後端提供(data/seed.json),前端疊層熱點圖不再寫死 2.0。
+        contract_carbon_max: issuance.contractCarbonMax,
+      };
+    } finally {
+      db.close();
+    }
+  });
+}

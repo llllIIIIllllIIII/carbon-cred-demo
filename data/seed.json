@@ -22,6 +22,7 @@
     "installation_unlocode": "VN SGN",
     "dqr": 2.1,
     "primary_data_share": 0.87,
+    "carbon_price_paid_origin": "越南尚無強制碳定價機制(ETS 試點,預計 2028 年起實施;合成值 0 TWD/tCO2e)",
     "confidential": {
       "machine_energy": "line-3: 412 kWh/t; line-7: 388 kWh/t(合成)",
       "ppa_contract": "PPA-2025-VN-SOLAR-018 · 覆蓋 35%(合成)",
@@ -40,7 +41,11 @@
     "self_direct": 0.08,
     "self_indirect": 0.33,
     "electricity_note": "台電網約 0.494 kgCO2e/kWh × ~0.67 MWh/t",
-    "carbon_price_paid_origin": "台灣碳費一般費率 300 TWD/tCO2e"
+    "carbon_price_paid_origin": "台灣碳費一般費率 300 TWD/tCO2e",
+    "issued_at": "2026-06-12",
+    "valid_from": "2026-06-12",
+    "valid_until": "2026-12-31",
+    "issued_at_note": "晚於上游 pcf_upstream issued_at(2026-05-29)——鴻鋼須先收到上游貨物與憑證才能算聚合;仍落在約三個月前區間(規格v2:273)"
   },
   "cases": {
     "A": {
