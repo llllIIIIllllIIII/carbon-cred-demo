@@ -1,0 +1,62 @@
+{
+  "thepviet": {
+    "alias": "thepviet",
+    "kind": "le",
+    "legal_name": "Thép Việt Wire Co.",
+    "aid": "EJaxJ2CiuVqnBFjk9g3fCGk2Y99sL2lmaUlqxtl7LRam",
+    "public_key": "DBU0ZrVnU72EP-olsTQfh6B7G0zcdi_TwNDFhya-2RYo",
+    "lei": "984500THEPVIET000197",
+    "credential_said": "EBIWT9tfC3bIZEph5OGmeY-PxupQJdz1YrwH5jsfRigI",
+    "presentation_file": "data/vlei/thepviet.presentation.json"
+  },
+  "hunggang": {
+    "alias": "hunggang",
+    "kind": "le",
+    "legal_name": "鴻鋼精密扣件股份有限公司",
+    "aid": "EPyI12YsEXEdsASWnCVyxHwbwd15VToO4QrWSKDqyvca",
+    "public_key": "DM7hpJCofsvOQN6YXtqumZHI_gIb-CysV-sIKL5quqXc",
+    "lei": "984500HUNGGANG000114",
+    "credential_said": "ECI2gaLCyJKpV7e3UJTnToJcoTQp6O0GOavNGVlVc1wt",
+    "presentation_file": "data/vlei/hunggang.presentation.json"
+  },
+  "bruck": {
+    "alias": "bruck",
+    "kind": "le",
+    "legal_name": "Bruck & Söhne GmbH",
+    "aid": "EK_s0X-uZJHjcVQ_J0ScJhdL7TAz3E8fgnmMgoIL70Ia",
+    "public_key": "DJAPDKgD9d4yAr8OLxIXXa23qPCFPJtcSkhsXmNGP_zi",
+    "lei": "984500BRUCKDEU000116",
+    "credential_said": "EF5IQWqDHKUeSvUFwTFSQq8joNlV8Uz1EtXjNuExm18-",
+    "presentation_file": "data/vlei/bruck.presentation.json"
+  },
+  "taiwanverify": {
+    "alias": "taiwanverify",
+    "kind": "le",
+    "legal_name": "台驗國際股份有限公司",
+    "aid": "ECrnfpSHu2-nEK6o5mKAHEN5nT28g3oCbsLYw0Djjnit",
+    "public_key": "DFDuQa8DdmYS1_htPoh_Daeb8PO5IsIFj-IEOaPtBsIi",
+    "lei": "984500TWVERIFY000121",
+    "credential_said": "EExpX4HkWCA0QaXKcpgjHiWNATKt5endwDo-daru41My",
+    "presentation_file": "data/vlei/taiwanverify.presentation.json"
+  },
+  "hunggang_cfo": {
+    "alias": "hunggang-cfo",
+    "kind": "ecr",
+    "legal_name": "鴻鋼財務主管 Lin Hsiu-Feng",
+    "aid": "EC04T7V7gd5_9ZGCAGc1Dmr9AF7GoX7fTBdoPhTL_LMy",
+    "public_key": "DDIE7AC2ZCnuGmH6HgBsUM9_bGoZXbvUjDjKrLCJQRvv",
+    "lei": "984500HUNGGANG000114",
+    "credential_said": "EIyo_swM64oOj9Lp5exdUWken3l_SS1MX3WSLGA9J0ux",
+    "presentation_file": "data/vlei/hunggang_cfo.presentation.json"
+  },
+  "bruck_cso": {
+    "alias": "bruck-cso",
+    "kind": "ecr",
+    "legal_name": "Bruck 永續長 Anna Schäfer",
+    "aid": "ECJNQRTITSvL5kC9kfiKFSbhRoOx53Cngp_evAlMviN_",
+    "public_key": "DKBHF24rDA5v06pec88rbL-Ci04xfIhjClus8Au8J4Yv",
+    "lei": "984500BRUCKDEU000116",
+    "credential_said": "EFR5TzIyFUa9edV60kElB0G2ceDXEgu1tjepbMRWVcCR",
+    "presentation_file": "data/vlei/bruck_cso.presentation.json"
+  }
+}

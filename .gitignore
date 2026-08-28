@@ -1,0 +1,13 @@
+# sandbox 狀態,內含私鑰種子——絕不進版控
+.vlei/
+# 兩把 app 產生的 workload 私鑰(組織/個人鑰在 .vlei/)
+data/keys/
+# 資料庫檔
+db/*.sqlite*
+# 依賴
+node_modules/
+.venv/
+# 雜項
+.DS_Store
+dist/
+*.log

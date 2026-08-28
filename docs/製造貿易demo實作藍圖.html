@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>實作藍圖 — 從六幕流程到程式碼</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@600;700;900&family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F4F7F3; --card:#FFFFFF; --ink:#1B2A32; --steel:#4A626F;
+  --pass:#2E7D5B; --pass-tint:#E4EFE8; --deny:#A93B2C; --deny-tint:#F5E7E3;
+  --warn:#B07A1E; --warn-tint:#F6EEDD; --line:#D3DCD5;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --serif:'Noto Serif TC','Songti TC',serif;
+  --sans:'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.75;font-size:16px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding:0 20px}
+a{color:var(--pass);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2.5px solid var(--pass);outline-offset:3px;border-radius:4px}
+
+nav{position:sticky;top:0;z-index:50;background:rgba(244,247,243,.93);backdrop-filter:blur(8px);border-bottom:1.5px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:13px;height:52px;overflow-x:auto;scrollbar-width:none}
+nav .wrap::-webkit-scrollbar{display:none}
+nav .brand{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--pass);white-space:nowrap;border:1.5px solid var(--pass);border-radius:5px;padding:2px 8px;transform:rotate(-2deg)}
+nav a.lnk{font-family:var(--mono);font-size:12px;color:var(--steel);white-space:nowrap;padding:4px 2px}
+nav a.lnk:hover{color:var(--ink);text-decoration:none;border-bottom:2px solid var(--pass)}
+
+header{padding:64px 0 48px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--pass);font-weight:600;margin-bottom:16px}
+h1{font-family:var(--serif);font-weight:900;font-size:clamp(27px,4.8vw,42px);line-height:1.32}
+.lede{margin-top:20px;font-size:16.5px;color:var(--steel);max-width:42em}
+.lede b{color:var(--ink)}
+
+section{padding:56px 0;border-top:1.5px solid var(--line)}
+.field-tag{font-family:var(--mono);font-size:11.5px;letter-spacing:.24em;color:var(--steel);font-weight:600;margin-bottom:10px}
+h2{font-family:var(--serif);font-weight:700;font-size:clamp(22px,3.4vw,30px);line-height:1.35;margin-bottom:12px}
+.sec-intro{color:var(--steel);max-width:44em;margin-bottom:28px}
+.sec-intro b{color:var(--ink)}
+
+/* ===== 幕卡:四塊制 ===== */
+.act{background:var(--card);border:1.5px solid var(--line);border-radius:14px;padding:22px 24px;margin-bottom:18px}
+.act-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.act-head .num{font-family:var(--serif);font-weight:900;font-size:30px;color:var(--pass);line-height:1}
+.act-head h3{font-family:var(--serif);font-size:19px;font-weight:700}
+.act-head .when{font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:#fff;background:var(--steel);border-radius:5px;padding:2px 8px;margin-left:auto}
+.blk{border-top:1px dashed var(--line);padding:12px 0 10px}
+.blk .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;font-weight:600;display:block;margin-bottom:5px}
+.blk.pos .lab{color:var(--steel)}
+.blk.tech .lab{color:var(--pass)}
+.blk.show .lab{color:var(--warn)}
+.blk.dod .lab{color:var(--deny)}
+.blk p{font-size:14.5px}
+.blk p b{color:var(--ink)}
+.blk code{font-family:var(--mono);font-size:12.5px;background:var(--paper);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.blk ul{margin:4px 0 0 1.2em;font-size:14.5px}
+.blk li{margin-bottom:3px}
+.fallback{margin-top:8px;background:var(--warn-tint);border-left:3px solid var(--warn);border-radius:0 8px 8px 0;padding:7px 12px;font-size:13.5px}
+.fallback b{color:var(--warn)}
+.stamp{display:inline-block;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.16em;color:var(--deny);border:2.5px solid var(--deny);border-radius:7px;padding:3px 10px;transform:rotate(-5deg);vertical-align:middle}
+
+/* ===== 架構圖 ===== */
+.arch{background:var(--ink);border-radius:16px;padding:24px 22px;color:#DCE6DE}
+.arch .field-tag{color:#9FB4A8}
+.arch h2{color:#fff}
+.arch .sec-intro{color:#B9C7BD}
+.abox{background:#243740;border:1.5px solid #455850;border-radius:10px;padding:12px 14px;font-size:13.5px}
+.abox .t{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:#8FD2AE;display:block;margin-bottom:4px}
+.abox small{color:#9FB4A8;font-size:12px;display:block;line-height:1.6}
+.arow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.arow2{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+@media(max-width:760px){.arow{grid-template-columns:1fr 1fr}.arow2{grid-template-columns:1fr}}
+.aarr{text-align:center;font-family:var(--mono);font-size:12px;color:#8FA79A;padding:6px 0}
+.keys{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+.keys span{font-family:var(--mono);font-size:11.5px;border:1.5px solid #55705F;border-radius:999px;padding:3px 11px;color:#C8E4D3}
+
+/* ===== UI 線框模擬 ===== */
+.mock{background:var(--card);border:1.5px solid var(--line);border-radius:14px;overflow:hidden;margin-top:10px}
+.mock-tabs{display:flex;flex-wrap:wrap;border-bottom:1.5px solid var(--line);background:var(--paper)}
+.mock-tabs button{font-family:var(--mono);font-size:12.5px;padding:11px 14px;border:none;background:transparent;color:var(--steel);cursor:pointer;border-bottom:2.5px solid transparent}
+.mock-tabs button.on{color:var(--pass);border-bottom-color:var(--pass);font-weight:600;background:var(--card)}
+.mock-pane{display:none;padding:18px}
+.mock-pane.on{display:block}
+.lei{font-family:var(--mono);font-size:10.5px;color:var(--steel);border:1px solid var(--line);border-radius:5px;padding:2px 8px;display:inline-block;margin-bottom:12px}
+.wf{border:1.5px dashed var(--steel);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--steel);margin-bottom:10px;background:var(--paper)}
+.wf b{color:var(--ink);font-size:13px}
+.wf.green{border-color:var(--pass);background:var(--pass-tint)}
+.wf.red{border-color:var(--deny);background:var(--deny-tint)}
+.wf .m{font-family:var(--mono);font-size:11.5px}
+.wfrow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:700px){.wfrow{grid-template-columns:1fr}}
+.audit-strip{border-top:1.5px solid var(--line);background:#101C22;color:#8FD2AE;font-family:var(--mono);font-size:11.5px;padding:9px 16px;white-space:nowrap;overflow-x:auto}
+.audit-strip i{font-style:normal;color:#E8A08F}
+.mock-cap{font-size:13.5px;color:var(--steel);margin-top:12px}
+.mock-cap b{color:var(--ink)}
+
+/* ===== 矩陣表 ===== */
+.tbl-wrap{overflow-x:auto;border:1.5px solid var(--line);border-radius:12px;background:var(--card)}
+table{border-collapse:collapse;width:100%;min-width:860px;font-size:13px}
+th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--steel);background:var(--paper);white-space:nowrap}
+td .m{font-family:var(--mono);font-size:12px}
+tr:last-child td{border-bottom:none}
+td b{color:var(--pass)}
+
+/* ===== 時程 ===== */
+.days{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px}
+@media(max-width:760px){.days{grid-template-columns:1fr 1fr}}
+.day{background:var(--card);border:1.5px solid var(--line);border-radius:10px;padding:12px 14px}
+.day .d{font-family:var(--mono);font-size:11.5px;color:var(--deny);font-weight:600}
+.day p{font-size:13.5px;margin-top:4px;line-height:1.6}
+.day.lock{border-color:var(--deny);background:var(--deny-tint)}
+.bottomline{margin-top:20px;background:var(--pass-tint);border:1.5px solid var(--pass);border-radius:12px;padding:14px 18px;font-size:14.5px}
+.bottomline b{color:var(--pass)}
+
+footer{border-top:1.5px solid var(--line);padding:40px 0 60px;font-size:13.5px;color:var(--steel)}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand">HENRY 版</span>
+  <a class="lnk" href="#arch">節0 地基</a>
+  <a class="lnk" href="#mock">UI 長相</a>
+  <a class="lnk" href="#a1">幕1</a>
+  <a class="lnk" href="#a2">幕2</a>
+  <a class="lnk" href="#a3">幕3</a>
+  <a class="lnk" href="#a4">幕4</a>
+  <a class="lnk" href="#a5">幕5</a>
+  <a class="lnk" href="#a6">幕6</a>
+  <a class="lnk" href="#matrix">速查表</a>
+  <a class="lnk" href="#days">時程</a>
+</div></nav>
+
+<header><div class="wrap">
+  <p class="eyebrow">TRACK 01 · 實作藍圖 — 從六幕流程到程式碼</p>
+  <h1>每一節四件事:在哪裡、用什麼、畫面長怎樣、做到哪算完成</h1>
+  <p class="lede">這一頁是給寫程式的你。每幕固定四個區塊:<b>① 供應鏈位置</b>(這段程式在替誰跑、跨了哪條信任邊界)、<b>② 技術細節</b>(憑證類型、金鑰、程式庫)、<b>③ 呈現方式</b>(錄影時螢幕上要出現什麼)、<b>④ 最小驗收與保底</b>(我加的第四項:做到什麼算完成,時間不夠退到哪)。先看節 0 的系統地基和 UI 線框,再逐幕往下。</p>
+</div></header>
+
+<!-- ================= 節0 架構 ================= -->
+<section id="arch"><div class="wrap">
+  <div class="arch">
+    <p class="field-tag">節 0 — 系統地基(賽前就要搞定)</p>
+    <h2>一個 repo、一個 API、一個四分頁前端,用金鑰假裝四家公司</h2>
+    <p class="sec-intro">POC 不需要四台伺服器。<b>「一方」的本質是一組金鑰,不是一台機器</b>——只要各方金鑰嚴格分開(組織與個人鑰自 vLEI Sandbox 匯出、workload 鑰另建於 app)、簽驗都動真格,密碼學敘事就成立,單一 Node 程序演四方完全沒問題。</p>
+    <div class="arow">
+      <div class="abox"><span class="t">TAB 1 · 越南廠</span>簽發端主控台<small>幕 1 在這裡演</small></div>
+      <div class="abox"><span class="t">TAB 2 · 鴻鋼閘道</span>Cedar 決策 + 聚合<small>幕 2、4 在這裡演</small></div>
+      <div class="abox"><span class="t">TAB 3 · Bruck Agent</span>mandate + 查驗 + 驗證<small>幕 3 在這裡演</small></div>
+      <div class="abox"><span class="t">TAB 4 · 稽核與撤銷</span>hash chain + status list<small>幕 5、6 在這裡演</small></div>
+    </div>
+    <p class="aarr">▲ Vite + React 單頁(切分頁 = 切組織視角) ── fetch ──▼</p>
+    <div class="arow2">
+      <div class="abox"><span class="t">API :3000</span>Fastify + better-sqlite3<small>9 張表:parties / credentials / mandates / presentations / policies / decisions / risk_signals / audit_chain / status_lists</small></div>
+      <div class="abox"><span class="t">/status/*(statuslist+jwt)</span>撤銷清單(mandates.jwt / credentials.jwt)<small>驗證方每次現抓,先驗 JWS 再解碼;翻 bit = 重簽重寫檔案</small></div>
+      <div class="abox"><span class="t">scripts/</span>presign(賽前)· revoke.ts · tamper.sh · verify-chain.ts · seed.ts<small>終端畫面也是 demo 的一部分</small></div>
+    </div>
+    <div class="keys">
+      <span>🔑 Thép Việt LE 鑰(sandbox)</span><span>🔑 鴻鋼 LE 鑰(sandbox)</span><span>🔑 財務主管 ECR 鑰(sandbox·簽 M1+幕5人簽)</span><span>🔑 永續長 ECR 鑰(sandbox·簽 M2)</span><span>🔑 hunggang-workload(app·Dossier/稽核)</span><span>🔑 bruck-workload(app·簽查驗請求)</span>
+    </div>
+    <p class="mock-cap" style="color:#B9C7BD;margin-top:14px"><b style="color:#fff">賽前(8/26–28)必做:</b>① 跑通主辦方 vLEI Sandbox,預簽 4 張法人(含查證機構台驗)+ 2 張 ECR 憑證匯出到 <span class="m" style="font-family:var(--mono)">data/vlei/</span>,並經 key loader 匯出各簽章私鑰(timebox 90 分,失敗即全域 Plan B);② <span class="m" style="font-family:var(--mono)">npm i</span> 裝好 @sd-jwt/*、jose、cedar-wasm、fastify、better-sqlite3,確認都能 import;③ seed.ts 灌好案件資料,<span class="m" style="font-family:var(--mono)">make dev</span> 一鍵起(統一 npm + make)。保底:Sandbox 跑不通 → 全域 Plan B(app 鑰 + 綁定聲明),治理缺口頁誠實標注。<b style="color:#fff">注:本頁檔案路徑僅為示意,實際目錄與規則以《專案架構決策》為準(優先序:架構 &gt; spec &gt; 本藍圖)。</b></p>
+  </div>
+</div></section>
+
+<!-- ================= UI 線框 ================= -->
+<section id="mock"><div class="wrap">
+  <p class="field-tag">節 0.5 — 你要做的畫面長這樣(可點分頁)</p>
+  <h2>四個分頁 + 一條永遠在底部的稽核帶</h2>
+  <p class="sec-intro">下面是可點的線框模擬。設計原則就三條:<b>每個分頁左上角掛該公司的 LEI 徽章</b>(評審一眼知道現在是誰的視角)、<b>每個狀態改變都配一個理由碼</b>(錄影鏡頭要拍的就是它)、<b>稽核帶常駐底部</b>(每個動作即時多一行)。</p>
+  <div class="mock">
+    <div class="mock-tabs">
+      <button class="on" data-p="0">1 越南廠</button>
+      <button data-p="1">2 鴻鋼閘道</button>
+      <button data-p="2">3 Bruck Agent</button>
+      <button data-p="3">4 稽核與撤銷</button>
+    </div>
+    <div class="mock-pane on">
+      <span class="lei">LEI 9845…VIET · Thép Việt Wire Co.</span>
+      <div class="wfrow">
+        <div class="wf"><b>批次資料表單(seed 預填)</b><br><span class="m">batch, direct 0.42, indirect 0.63, route EAF, 係數表檔…</span></div>
+        <div class="wf green"><b>[ 簽發 SD-JWT 憑證 ▶ ]</b><br>按下去才簽,不是播動畫</div>
+      </div>
+      <div class="wf"><b>憑證卡</b> — 🟢 公開 ×4(cn_code…)· 🟡 可撕欄位 ×6(direct…)· 🔴 僅指紋 ×3(machine_energy…)<br><span class="m">raw: eyJhbGci…&lt;JWT&gt; ~ &lt;d1&gt; ~ &lt;d2&gt; ~ …</span> ← 旁註「1 個簽章 + N 張可撕欄位」</div>
+    </div>
+    <div class="mock-pane">
+      <span class="lei">LEI 9845…HUNG · 鴻鋼精密扣件</span>
+      <div class="wfrow">
+        <div class="wf"><b>請求收件匣</b><br><span class="m">#req-07 from Bruck-Agent · claims×6 · nonce…</span></div>
+        <div class="wf"><b>Cedar 決策面板</b><br><span class="m">PERMIT · 命中 P1</span> / <span class="m" style="color:var(--deny)">DENY · 命中 P2</span> + 規則原文高亮</div>
+      </div>
+      <div class="wfrow">
+        <div class="wf"><b>疊層熱點圖(SVG)</b><br>線材 1.10 ▓▓▓▓ + 自製直接 0.08 ▓ + 自製間接 0.33 ▓▓ = 1.51</div>
+        <div class="wf green"><b>[ 聚合簽發 pcf_aggregate ▶ ]</b><br>上游只留 ref hash,不含明細</div>
+      </div>
+    </div>
+    <div class="mock-pane">
+      <span class="lei">LEI 9845…BRUC · Bruck &amp; Söhne GmbH</span>
+      <div class="wf"><b>Mandate 卡(M2)</b> — allowed_claims 六個 chips · 效期 9/30 · nonce · <span class="m">policy pol-2026-08-v2</span></div>
+      <div class="wfrow">
+        <div class="wf green"><b>[ 發出查驗請求 ▶ ]</b></div>
+        <div class="wf red"><b>[ 加碼索取 machine_energy ▶ ]</b> ← 幕 4 的按鈕,故意放在旁邊</div>
+      </div>
+      <div class="wfrow">
+        <div class="wf"><b>收到的 presentation</b><br>只有 6 列。其他欄位<b>連遮罩都沒有</b>——真的不存在於文件裡</div>
+        <div class="wf green"><b>驗證面板</b><br>簽章 ✓ · vLEI 鏈 ✓ · 撤銷狀態 ✓ · <span class="m">OFFLINE</span> 標籤</div>
+      </div>
+    </div>
+    <div class="mock-pane">
+      <span class="lei">全域視角(稽核員)</span>
+      <div class="wfrow">
+        <div class="wf"><b>audit_chain 表格</b><br>全綠 → 跑 tamper.sh 後 <span class="m" style="color:var(--deny)">#42 起全紅 FAIL</span></div>
+        <div class="wf"><b>Status List bit 條</b><br><span class="m">…0 0 [1] 0…</span> + 撤銷開關(mandate / 憑證各一)</div>
+      </div>
+      <div class="wf"><b>Dossier 列表</b><br><span class="m">dossier-A · PAID</span> → 上游憑證被撤後出現黃 badge「<b>依據已撤銷,需重驗</b>」</div>
+    </div>
+    <div class="audit-strip">稽核帶 ▸ #41 disclose PERMIT P1 sig=8f2a… ▸ <i>#42 deny P2 POLICY_P2_CONFIDENTIAL</i> ▸ #43 emit_release dossier-A ▸ #44 revoke mandate idx7 ▸ _</div>
+  </div>
+  <p class="mock-cap"><b>錄影原則:</b>鏡頭只拍「狀態改變 + 理由碼」。按鈕按下去 → 東西變色 → 理由碼出現,一幕一個重點,不要滑來滑去。</p>
+</div></section>
+
+<!-- ================= 幕1 ================= -->
+<section id="a1"><div class="wrap">
+  <div class="act">
+    <div class="act-head"><span class="num">1</span><h3>簽發 — 越南廠開出碳足跡憑證</h3><span class="when">Day 1 上午</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span>
+      <p>最上游 Tier-2、<b>整條信任鏈的源頭</b>。程式跑在「Thép Việt 的系統」(= Tab 1 + Thép Việt 簽發鍵)。這一步不跨組織——但它簽出來的東西,後面每一幕都要驗。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span>
+      <ul>
+        <li>憑證:<b>SD-JWT VC</b>(<code>@sd-jwt/core</code> + <code>@sd-jwt/sd-jwt-vc</code>,OpenWallet Foundation sd-jwt-js),資料模型照 <b>UNTP DPP 0.6</b> 欄位命名。</li>
+        <li>欄位三分法:<b>非 SD 明文</b> = cn_code / quantity / origin(公開層);<b>SD 可撕欄位</b> = direct、route、carbon_price、indirect、installation、dqr(海關層+客戶層);<b>機密根本不進憑證</b> — 只放三個 commitment hash(machine_energy_hash…)+ <code>emission_factor_table_hash</code> 當一般 claim。</li>
+        <li>簽章鑰 = Thép Việt 的 <b>sandbox LE AID 鑰</b>(SD-JWT ✓ 與 vLEI 鏈 ✓ 是同一把——Codex 審查後定案);憑證以 <code>status.status_list = {idx, uri}</code> 掛撤銷參照(如 idx #12)。</li>
+        <li>[選配] RISC Zero dev mode:guest 驗 Σ(活動數據×係數)=0.42,journal 的 hash 塞進 VC 的 <code>evidence</code>。</li>
+      </ul></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span>
+      <p>Tab 1:預填表單 → 按「簽發」→ 憑證卡出現,欄位用 🟢🟡🔴 三色標;下方印出原始 token <code>&lt;JWT&gt;~&lt;d1&gt;~&lt;d2&gt;…</code>,口白一句:「一個簽章、N 張可撕欄位」。這一幕就是把觀眾對『憑證長什麼樣』的想像釘下來。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
+      <p>DoD:<code>verify()</code> 通過;手動改 payload 一個 byte → 驗證失敗(這個失敗畫面留著,幕 6 之前有人問就秀)。</p>
+      <div class="fallback"><b>保底:</b>簽發改成賽前 script 預簽,demo 只展示已簽好的結果卡——按鈕變成「載入憑證」,其餘不變。</div></div>
+  </div>
+</div></section>
+
+<!-- ================= 幕2 ================= -->
+<section id="a2"><div class="wrap">
+  <div class="act">
+    <div class="act-head"><span class="num">2</span><h3>聚合 — 鴻鋼疊出自己產品的憑證</h3><span class="when">Day 1 上午</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span>
+      <p>Tier-1 <b>內部</b>(Tab 2 + 鴻鋼 sandbox LE 鑰)。這是命題「資料散落在內部系統與供應商之間」被接起來的位置:上游憑證(外部)+ 自家製程資料(內部)→ 一張新憑證(給下游)。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span>
+      <ul>
+        <li>鴻鋼以持有者身分讀上游 VC 的<b>完整客戶層</b>出示(它是買方,拿得到),程式計算 <code>1.05×1.05 + 0.08 + 0.33 = 1.51</code>。</li>
+        <li>簽發 <b>pcf_aggregate</b>(同樣 SD-JWT):<code>carbon_price_paid</code> = 台灣碳費;<code>precursor_ref</code> = 上游 VC 的 id + hash,<b>不含上游任何明細欄位</b>。</li>
+        <li>疊層熱點圖 = 一個 &lt;svg&gt; 三段 rect,寬度綁真實計算值,不要硬寫。</li>
+      </ul></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span>
+      <p>按「聚合簽發」→ 熱點圖長出三段(案 B 時上游段變紅,一眼看出超標在高爐路線)→ 新憑證卡出現。鏡頭停在一句話上:<b>「新憑證裡沒有上游明細,只有一個參照指紋」</b>——Tier-N 最小揭露傳遞就是這 15 秒。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
+      <p>DoD:聚合值由程式算出、圖用真值渲染;換 seed(案 A→B)圖跟著變。</p>
+      <div class="fallback"><b>保底:</b>SVG 退成兩張靜態圖(A 版/B 版)切換。</div></div>
+  </div>
+</div></section>
+
+<!-- ================= 幕3 ================= -->
+<section id="a3"><div class="wrap">
+  <div class="act">
+    <div class="act-head"><span class="num">3</span><h3>委任與查驗 — 跨組織的主線</h3><span class="when">Day 1 下午 ★核心</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span>
+      <p><b>唯一橫跨三個位置的一幕</b>:Bruck 側簽 mandate(Tab 3)→ 請求跨過組織邊界進鴻鋼閘道(Tab 2 的 Cedar)→ presentation 回到 Bruck 側<b>本地離線驗證</b>。信任邊界被跨了兩次,這正是 Track 01 的題眼。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span>
+      <ul>
+        <li><b>M2 mandate</b> = 一般 JWT(<code>jose</code> 就夠,不需 SD),由 Bruck 永續長 <b>sandbox ECR 鑰</b>簽;欄位照 spec §5.2:allowed_claims×6、granularity=batch、query_cap、<b>jti / mandate_nonce / delegate_kid(綁 bruck-workload 鑰)</b>、policy_version、status.status_list。每次查驗請求由 workload 鑰簽章並附<b>新的 request_nonce</b>——閘道對 (mandate_id, request_nonce) UNIQUE,重送 → <code>REPLAY_DETECTED</code>;query_cap 扣次與 presentation、稽核同一交易;驗證結果以 <code>context.mandate_status_ok / delegate_key_ok / replay_ok</code> 三布林餵入 Cedar,**政策不直接讀 mandate 狀態**。</li>
+        <li>閘道:<b>Cedar P1</b>(<code>@cedar-policy/cedar-wasm</code> 的 authorize)判 PERMIT → 後端以<b>持有端身分</b>從上游 SD-JWT 挑出 allowed_claims 對應的 disclosures,組 presentation 回傳。重點:<b>是「挑 disclosure」,不是「過濾 JSON」</b>。</li>
+        <li>Bruck 端驗證三件事:簽章(用 Thép Việt/鴻鋼<b>公鑰</b>,不呼叫鴻鋼 API)、vLEI 鏈(讀 data/vlei/ 預簽檔)、Status List(抓 <code>/status/*</code> 的 compact JWT,<b>先驗 JWS 簽章 → 解碼 status_list.bits/lst → 查 idx</b>)。Key-binding JWT 不做 → 治理缺口頁。</li>
+      </ul></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span>
+      <p>Tab 3:mandate 卡(六個 claim chips 醒目)→ 按「發出查驗」→ 切 Tab 2 看一眼 <code>PERMIT · P1</code> → 切回 Tab 3:presentation 卡<b>只有六列</b>,旁註「其他欄位連遮罩都沒有——不存在於這份文件」→ 驗證面板三個綠勾 + <code>OFFLINE</code> 標籤(錄影時開飛航模式或拔 API,口白帶一句)。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
+      <p>DoD:斷網狀態驗證仍成功;故意在 allowed_claims 外多挑一個 disclosure → Bruck 端政策檢查報 <code>CLAIM_NOT_IN_MANDATE</code>(雙向約束)。</p>
+      <div class="fallback"><b>保底:</b>cedar-wasm 裝不起來 → 手寫 <code>policy.ts</code> 純函式,但畫面照樣顯示 Cedar 規則原文並標注「引擎簡化」。SD-JWT 是本幕不可退讓的底線。</div></div>
+  </div>
+</div></section>
+
+<!-- ================= 幕4 ================= -->
+<section id="a4"><div class="wrap">
+  <div class="act">
+    <div class="act-head"><span class="num">4</span><h3>越界攔截 <span class="stamp">DENY</span></h3><span class="when">Day 1 下午 ★高潮</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span>
+      <p>同幕 3 的組織邊界上,但<b>停在鴻鋼閘道內</b>——請求進來、被擋、只有「拒絕 + 理由碼」出去,一個資料欄位都沒離開。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span>
+      <ul>
+        <li><b>Cedar P2 forbid</b>:claim.tag == "confidential" 一律拒絕,<b>不看 mandate 寫什麼</b>(forbid 優先於 permit 是 Cedar 內建語意,Q&A 可以講)。</li>
+        <li>Deny 也產 decision + audit entry,<b>同一筆 DB 交易</b>寫入;理由碼 <code>POLICY_P2_CONFIDENTIAL</code>。</li>
+      </ul></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span>
+      <p>Tab 3 按那顆紅色的「加碼索取 machine_energy」→ Tab 2 出現旋轉紅章 DENY + P2 規則原文高亮 → 底部稽核帶<b>即時多一行並閃一下</b>。鏡頭定格在理由碼三秒。這 20 秒是整支錄影剪輯的錨點。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
+      <p>DoD:deny 事件能被 <code>verify-chain.ts</code> 驗到(證明「連拒絕都留痕」)。</p>
+      <div class="fallback"><b>保底:</b>無。這幕成本最低、分數最高,必做。</div></div>
+  </div>
+</div></section>
+
+<!-- ================= 幕5 ================= -->
+<section id="a5"><div class="wrap">
+  <div class="act">
+    <div class="act-head"><span class="num">5</span><h3>門檻與付款閘道 — Agent 開單、人簽字</h3><span class="when">Day 2 上午</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span>
+      <p>回到 Tier-1 內部、面向<b>上游</b>方向(付款前檢查)。跑在鴻鋼的 Agent-1(hunggang-workload 鑰),但最後一步的簽名權在<b>財務主管的 ECR 鑰</b>——workload 鑰 vs 角色鑰的分離就是這幕的主角,而且人的放行簽名也鏈回公司。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span>
+      <ul>
+        <li><b>Cedar P3</b> 要件:身分 ✓ / 碳排 ≤ 2.00 ✓ / 發票 ✓ / 收款帳戶風險 ✓(risk_signals 表,雙來源才升級)+ context.mandate_status_ok。</li>
+        <li><b>Dossier</b> = JWS by workload 鍵,payload 含 <code>build_hash</code>(git commit)、version、四項檢查結果、輸入憑證的 hash。</li>
+        <li>人簽 = <b>財務主管 ECR 鑰</b>(UI 標明「以財務主管 ECR 金鑰簽署」)、獨立確認對話框;付款一律 <b>mock 指令 JSON</b>(真實 testnet out of scope——訪談證實現行美金電匯為主)。</li>
+        <li>A/B/C/C′ 四組 seed 共用同一條管線切換;<b>E 不是資料組</b>,是幕 6「撤銷後重跑 A」的狀態轉換。</li>
+      </ul></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span>
+      <p>案 A:四個檢查逐列亮綠 → Dossier 卡展開(鏡頭給 workload 簽章 + build_hash)→ 跳出<b>不同配色</b>的「人工簽核」對話框,標明「<b>以財務主管 ECR 金鑰簽署</b>」→ 狀態 PAID(mock 付款指令編號)。案 B:第二列紅 <code>CARBON_OVER_THRESHOLD</code>,畫面上只剩「轉人工/補件」可按。案 C:風險表兩列 provider 並排 → <code>MULTI_SOURCE_CONFIRMED</code> 退回;C′ 一列 → <code>SINGLE_SOURCE_ONLY</code> 灰色「只記錄」。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
+      <p>DoD:decision 與 audit 同交易;B/C 案 UI 上「放行」按鈕實際不存在(不是 disabled,是不渲染——口白可講)。</p>
+      <div class="fallback"><b>保底:</b>錄影只拍 A + B,C′ 用口述;USDC 永遠停留在 mock 指令,不碰鏈。</div></div>
+  </div>
+</div></section>
+
+<!-- ================= 幕6 ================= -->
+<section id="a6"><div class="wrap">
+  <div class="act">
+    <div class="act-head"><span class="num">6</span><h3>稽核與撤銷 <span class="stamp">REVOKED</span></h3><span class="when">Day 2 上午</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span>
+      <p>橫跨全部:稽核帶屬於鴻鋼閘道、撤銷清單屬於<b>各簽發者</b>(Bruck 撤 mandate、Thép Việt 撤憑證)、重驗發生在所有驗證方。這幕證明的是「事後有人能抓、事中有人能拔插頭」。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span>
+      <ul>
+        <li><b>audit_chain</b>:<code>entry_hash = sha256(prev_hash ‖ payload_hash ‖ ts)</code> + workload 鍵簽收據;<code>verify-chain.ts</code> 從頭走一遍;<code>tamper.sh</code> = 一行 sqlite UPDATE 改歷史某筆。</li>
+        <li><b>Token Status List(draft-ietf-oauth-status-list-21)</b>:compact signed JWT,header.typ=<code>"statuslist+jwt"</code>,payload 含 <code>sub</code>/<code>iat</code>(建議 <code>exp</code>/<code>ttl</code>)與 <code>status_list = { bits: 1, lst: base64url(zlib 壓縮位元陣列) }</code>;端點回 <code>application/statuslist+jwt</code>;<b>保底 = 裸 bit array JSON(明確標示 fallback)</b>。<code>revoke.ts --list mandates --index 7</code> 重寫檔案。</li>
+        <li>兩種撤銷都演:撤 <b>mandate</b> → 重跑案 A 得 <code>MANDATE_REVOKED</code>;撤<b>上游憑證</b> → 已放行 Dossier 標記 <code>depends_revoked</code>(查 credentials 引用鏈)——紡織版搬來的回溯戲。</li>
+      </ul></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span>
+      <p>切到終端:<code>verify-chain</code> 全綠 → <code>./tamper.sh 42</code> → 重驗,#42 起紅字 FAIL(竄改無所遁形)。回 Tab 4:bit 條 <code>…0 0 [1] 0…</code> 翻轉 → 重跑案 A,紅章 MANDATE_REVOKED → Dossier 列表浮出黃 badge「依據已撤銷,需重驗」。口白補一句 vLEI 撤銷向下連鎖。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
+      <p>DoD:撤銷<b>不重啟服務</b>即生效(驗證方每次現抓 status);tamper 後能一鍵還原(備份 db 檔)。</p>
+      <div class="fallback"><b>保底:</b>status list 用裸 JSON;hash chain 驗證只跑終端不做 UI 表格。</div></div>
+  </div>
+
+  <div class="act">
+    <div class="act-head"><span class="num">＋</span><h3>加映 — RBA 憑證換皮重跑</h3><span class="when">Day 2 上午收尾</span></div>
+    <div class="blk pos"><span class="lab">① 供應鏈位置</span><p>同幕 3 的 Tier-0 → Tier-1 邊界,只是憑證從「碳」換成「勞動合規」。</p></div>
+    <div class="blk tech"><span class="lab">② 技術細節</span><p><b>rba_dcc</b> = UNTP DCC claims 欄位對照(非 schema 符合)、單一 claim <code>recruitment_fee_policy_compliant=true</code>;共用同一套 status list 與同一條管線——<b>理想上不改核心程式,只加 schema + seed</b>。</p></div>
+    <div class="blk show"><span class="lab">③ 呈現方式</span><p>Tab 3 憑證下拉換 rba_labor → 同樣的查驗流程只揭露一欄 → 撤銷 → 擋單。20 秒,證明底座可遷移。</p></div>
+    <div class="blk dod"><span class="lab">④ 最小驗收與保底</span><div class="fallback"><b>保底:</b>不寫程式,Yulia 用一頁投影片講。</div></div>
+  </div>
+</div></section>
+
+<!-- ================= 矩陣 ================= -->
+<section id="matrix"><div class="wrap">
+  <p class="field-tag">速查矩陣</p>
+  <h2>一張表對齊:誰簽、誰驗、用什麼、寫哪些檔</h2>
+  <div class="tbl-wrap"><table>
+    <tr><th>幕</th><th>簽 → 驗</th><th>憑證 / 金鑰</th><th>主要程式庫</th><th>你要寫的檔案</th><th>保底</th></tr>
+    <tr><td><b>1 簽發</b></td><td>Thép Việt → (之後所有人)</td><td class="m">pcf_upstream(SD-JWT VC)/ Thép Việt LE 鑰(sandbox)</td><td class="m">@sd-jwt/core · sd-jwt-vc</td><td class="m">server/creds/issue-upstream.ts</td><td>賽前預簽</td></tr>
+    <tr><td><b>2 聚合</b></td><td>鴻鋼 → Bruck</td><td class="m">pcf_aggregate(SD-JWT VC)/ 鴻鋼 LE 鑰(sandbox)</td><td class="m">同上 + 手寫聚合</td><td class="m">server/creds/aggregate.ts · StackChart.tsx</td><td>靜態 SVG</td></tr>
+    <tr><td><b>3 查驗</b></td><td>永續長 ECR 簽 M2;bruck-workload 簽請求;Bruck 驗上游簽章</td><td class="m">M2(JWT,jti+delegate_kid)/ ECR 鑰 + workload 鑰</td><td class="m">jose · cedar-wasm · @sd-jwt/present</td><td class="m">server/routes/disclose.ts · verify-offline.ts</td><td>policy.ts 手寫,SD-JWT 不退</td></tr>
+    <tr><td><b>4 攔截</b></td><td>—(請求被擋;REPLAY 同路徑)</td><td class="m">同上 / hunggang-workload 鑰簽稽核</td><td class="m">cedar-wasm</td><td class="m">policies/p2.cedar · server/audit.ts</td><td>必做,無保底</td></tr>
+    <tr><td><b>5 閘道</b></td><td>workload 簽 Dossier;財務主管 ECR 簽放行</td><td class="m">dossier(JWS)/ hunggang-workload 鑰 + 財務主管 ECR 鑰</td><td class="m">jose · better-sqlite3</td><td class="m">server/routes/agent.ts · HumanSignModal.tsx</td><td>只錄 A+B;付款停在 mock</td></tr>
+    <tr><td><b>6 稽核撤銷</b></td><td>各簽發者撤各自的</td><td class="m">Token Status List JWT / 各簽發鑰</td><td class="m">node:crypto · zlib</td><td class="m">scripts/revoke.ts · tamper.sh · verify-chain.ts</td><td>裸 bit JSON(明確標示)</td></tr>
+    <tr><td><b>+ RBA</b></td><td>台驗(查證機構)→ 採購 Agent</td><td class="m">rba_dcc(JWT)/ 台驗 LE 鑰</td><td class="m">複用全部</td><td class="m">seed 加一段(選配)</td><td>投影片講</td></tr>
+  </table></div>
+</div></section>
+
+<!-- ================= 時程 ================= -->
+<section id="days"><div class="wrap">
+  <p class="field-tag">時程與底線</p>
+  <h2>把時間花在會被拍到的地方</h2>
+  <div class="days">
+    <div class="day"><span class="d">賽前 8/26–28</span><p>節 0 全部:vLEI 預簽、依賴裝好、seed、repo 骨架、四分頁空殼</p></div>
+    <div class="day"><span class="d">Day 1 上午</span><p>幕 1 簽發 + 幕 2 聚合(含熱點圖)</p></div>
+    <div class="day"><span class="d">Day 1 下午</span><p>幕 3 查驗 + 幕 4 攔截 ★核心,做完今天才算贏</p></div>
+    <div class="day"><span class="d">Day 2 上午</span><p>幕 5 閘道 + 幕 6 稽核撤銷 + 加映</p></div>
+    <div class="day lock"><span class="d">Day 2 下午</span><p><b>錄影,不可侵犯。</b>交件 8/30 23:59</p></div>
+  </div>
+  <div class="bottomline"><b>進度落後時的三幕保底:</b>幕 3(SD-JWT 只給六欄)→ 幕 4(攔截)→ 幕 6(撤銷回溯)。資料硬編碼、憑證預簽、單頁 UI——這三幕就同時覆蓋比賽三面向(授權/邊界/追溯撤銷),其餘全是加分題。</div>
+</div></section>
+
+<footer><div class="wrap">
+  <p><b style="color:var(--ink)">配套文件</b> — 欄位與數值以 <span style="font-family:var(--mono);font-size:12.5px">demo情境設定與合成資料規格-v2.md</span> 為準;流程概念見《製造貿易demo新手圖解.html》;場景決策見 8/25 備忘錄。本頁所有識別碼與數值皆為合成資料。</p>
+</div></footer>
+
+<script>
+(function(){
+  var tabs=document.querySelectorAll('.mock-tabs button');
+  var panes=document.querySelectorAll('.mock-pane');
+  tabs.forEach(function(b){
+    b.addEventListener('click',function(){
+      tabs.forEach(function(x){x.classList.remove('on')});
+      panes.forEach(function(x){x.classList.remove('on')});
+      b.classList.add('on');
+      panes[+b.dataset.p].classList.add('on');
+    });
+  });
+})();
+</script>
+</body>
+</html>

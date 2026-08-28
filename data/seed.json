@@ -1,0 +1,88 @@
+{
+  "_note": "所有識別碼與數值皆為合成資料(比賽規則第十四節)。收款帳戶識別碼為合成字串,不對應任何鏈上位址。E 不是 seed 資料組:E = 撤銷後重跑 A 的狀態轉換,不建 fixture。",
+  "transaction": {
+    "upstream_product": "低碳鋼線材 SWRCH22A",
+    "upstream_cn_code": "7213.91",
+    "downstream_product": "六角螺栓 M12",
+    "downstream_cn_code": "7318.15",
+    "quantity_t": 40,
+    "unit_price_usd": 650,
+    "amount": 26000,
+    "currency": "USDC",
+    "currency_note": "USDC 為合成幣別,僅出現於 mock 付款指令",
+    "country_of_origin": "VN",
+    "contract_carbon_max": 2.0,
+    "contract_note": "≤2.00 tCO2e/t(direct+indirect)為買方合約條款,非法定;CBAM 正式期鋼鐵類申報僅計 direct"
+  },
+  "pcf_defaults": {
+    "issued_at": "2026-05-29",
+    "valid_from": "2026-05-29",
+    "valid_until": "2026-12-31",
+    "electricity_mix_ref": "VN-grid-2025 · 0.65 kgCO2e/kWh",
+    "installation_unlocode": "VN SGN",
+    "dqr": 2.1,
+    "primary_data_share": 0.87,
+    "confidential": {
+      "machine_energy": "line-3: 412 kWh/t; line-7: 388 kWh/t(合成)",
+      "ppa_contract": "PPA-2025-VN-SOLAR-018 · 覆蓋 35%(合成)",
+      "recipe": "SWRCH22A 配比 C 0.20 / Mn 0.75 / B 微量(合成)",
+      "customer_list": "客戶名單(合成)",
+      "capacity_utilization": 0.78
+    },
+    "emission_factor_table": {
+      "electricity_vn_2025_kg_per_kwh": 0.65,
+      "eaf_route_direct_t_per_t": 0.42,
+      "bf_bof_route_direct_t_per_t": 1.98
+    }
+  },
+  "aggregate_defaults": {
+    "precursor_input_ratio_t_per_t": 1.05,
+    "self_direct": 0.08,
+    "self_indirect": 0.33,
+    "electricity_note": "台電網約 0.494 kgCO2e/kWh × ~0.67 MWh/t",
+    "carbon_price_paid_origin": "台灣碳費一般費率 300 TWD/tCO2e"
+  },
+  "cases": {
+    "A": {
+      "production_route": "EAF",
+      "direct": 0.42,
+      "indirect": 0.63,
+      "total": 1.05,
+      "payee_wallet": "0xA7f3...9C21",
+      "expected": "四項全過 → Dossier → 財務主管 ECR 簽署放行"
+    },
+    "B": {
+      "production_route": "BF-BOF",
+      "direct": 1.98,
+      "indirect": 0.12,
+      "total": 2.1,
+      "payee_wallet": "0xA7f3...9C21",
+      "expected": "CARBON_OVER_THRESHOLD → 轉人工補件"
+    },
+    "C": {
+      "production_route": "EAF",
+      "direct": 0.42,
+      "indirect": 0.63,
+      "total": 1.05,
+      "payee_wallet": "0x4Bd8...17Fe",
+      "expected": "MULTI_SOURCE_CONFIRMED → 升級 → 退回"
+    },
+    "Cp": {
+      "production_route": "EAF",
+      "direct": 0.42,
+      "indirect": 0.63,
+      "total": 1.05,
+      "payee_wallet": "0x9Ee2...4A08",
+      "expected": "SINGLE_SOURCE_ONLY → 只記錄不升級(自我約束)"
+    }
+  },
+  "risk_signals": [
+    { "case_id": "A", "payee_wallet": "0xA7f3...9C21", "provider": "provider_a", "score": 12, "labels": [] },
+    { "case_id": "B", "payee_wallet": "0xA7f3...9C21", "provider": "provider_a", "score": 12, "labels": [] },
+    { "case_id": "C", "payee_wallet": "0x4Bd8...17Fe", "provider": "provider_a", "score": 78, "labels": ["peel_chain", "rapid_passthrough"] },
+    { "case_id": "C", "payee_wallet": "0x4Bd8...17Fe", "provider": "provider_b", "score": 71, "labels": ["peel_chain"] },
+    { "case_id": "Cp", "payee_wallet": "0x9Ee2...4A08", "provider": "provider_a", "score": 74, "labels": ["rapid_passthrough"] },
+    { "case_id": "Cp", "payee_wallet": "0x9Ee2...4A08", "provider": "provider_b", "score": 18, "labels": [] }
+  ],
+  "risk_observed_at": "2026-08-20T00:00:00Z"
+}

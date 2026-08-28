@@ -1,0 +1,34 @@
+{
+  "name": "carbon-cred-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "跨組織碳足跡憑證選擇性揭露 demo(台灣扣件廠情境)— 2 天黑客松 POC",
+  "scripts": {
+    "dev:server": "tsx watch server/index.ts",
+    "dev:web": "vite",
+    "seed": "tsx scripts/seed.ts",
+    "test": "tsx scripts/test.ts"
+  },
+  "dependencies": {
+    "@cedar-policy/cedar-wasm": "^4.12.0",
+    "@owf/token-status-list": "^0.3.2",
+    "@sd-jwt/core": "^0.20.0",
+    "@sd-jwt/sd-jwt-vc": "^0.20.0",
+    "better-sqlite3": "^12.2.0",
+    "fastify": "^5.4.0",
+    "jose": "^6.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0"
+  }
+}

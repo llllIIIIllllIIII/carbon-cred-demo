@@ -1,0 +1,163 @@
+# vLEI sandbox -- real environment
+#
+# Brings up the same infrastructure GLEIF uses in its official training stack:
+#   vlei-server   serves the official vLEI ACDC JSON schemas over OOBI
+#   witness-demo  a six-witness pool (wan, wil, wes, wit, wub, wyz)
+#   keria         the multi-tenant KERI agent that Signify clients connect to
+#   sally-hook    a webhook that receives IPEX credential presentations as JSON
+#
+# All configuration is inlined via compose `configs`, so this file is standalone:
+#   docker compose -f docker-compose.yaml up -d
+#
+# Requires Docker Compose v2.23 or newer (for `configs.content`).
+
+x-healthcheck: &healthcheck
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 5s
+
+networks:
+  default:
+    name: vlei_sandbox_network
+
+configs:
+  keria_config:
+    content: |
+      {
+        "keria": {
+          "dt": "2024-12-31T14:06:30.123456+00:00",
+          "curls": ["http://keria:3902/"]
+        },
+        "dt": "2024-12-31T14:06:30.123456+00:00",
+        "iurls": [
+          "http://witness-demo:5642/oobi/BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha/controller?name=wan&tag=witness",
+          "http://witness-demo:5643/oobi/BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM/controller?name=wil&tag=witness",
+          "http://witness-demo:5644/oobi/BIKKuvBwpmDVA4Ds-EpL5bt9OqPzWPja2LigFYZN2YfX/controller?name=wes&tag=witness",
+          "http://witness-demo:5645/oobi/BM35JN8XeJSEfpxopjn5jr7tAHCE5749f0OobhMLCorE/controller?name=wit&tag=witness",
+          "http://witness-demo:5646/oobi/BIj15u5V11bkbtAxMA7gcNJZcax-7TgaBMLsQnMHpYHP/controller?name=wub&tag=witness",
+          "http://witness-demo:5647/oobi/BF2rZTW79z4IXocYRQnjjsOuvFUQv-ptCf8Yltd7PfsM/controller?name=wyz&tag=witness"
+        ]
+      }
+  wan_config:
+    content: |
+      {"wan": {"dt": "2024-12-31T14:06:30.123456+00:00",
+       "curls": ["tcp://witness-demo:5632/", "http://witness-demo:5642/"]},
+       "dt": "2024-12-31T14:06:30.123456+00:00", "iurls": []}
+  wil_config:
+    content: |
+      {"wil": {"dt": "2024-12-31T14:06:30.123456+00:00",
+       "curls": ["tcp://witness-demo:5633/", "http://witness-demo:5643/"]},
+       "dt": "2024-12-31T14:06:30.123456+00:00", "iurls": []}
+  wes_config:
+    content: |
+      {"wes": {"dt": "2024-12-31T14:06:30.123456+00:00",
+       "curls": ["tcp://witness-demo:5634/", "http://witness-demo:5644/"]},
+       "dt": "2024-12-31T14:06:30.123456+00:00", "iurls": []}
+  wit_config:
+    content: |
+      {"wit": {"dt": "2024-12-31T14:06:30.123456+00:00",
+       "curls": ["tcp://witness-demo:5635/", "http://witness-demo:5645/"]},
+       "dt": "2024-12-31T14:06:30.123456+00:00", "iurls": []}
+  wub_config:
+    content: |
+      {"wub": {"dt": "2024-12-31T14:06:30.123456+00:00",
+       "curls": ["tcp://witness-demo:5636/", "http://witness-demo:5646/"]},
+       "dt": "2024-12-31T14:06:30.123456+00:00", "iurls": []}
+  wyz_config:
+    content: |
+      {"wyz": {"dt": "2024-12-31T14:06:30.123456+00:00",
+       "curls": ["tcp://witness-demo:5637/", "http://witness-demo:5647/"]},
+       "dt": "2024-12-31T14:06:30.123456+00:00", "iurls": []}
+
+services:
+  vlei-server:
+    image: gleif/vlei:1.0.0
+    container_name: vlei-schema-server
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=UTF-8
+    healthcheck:
+      # EBfdlu8R... is the well-known SAID of the QVI credential schema
+      test: ["CMD", "curl", "-f",
+             "http://127.0.0.1:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"]
+      <<: *healthcheck
+    ports:
+      - "7723:7723"
+
+  witness-demo:
+    image: gleif/keri:1.2.9
+    container_name: vlei-witness-demo
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=UTF-8
+      - PYTHONWARNINGS=ignore::SyntaxWarning
+    command: witness demo --loglevel INFO
+    configs:
+      - source: wan_config
+        target: /keripy/scripts/keri/cf/main/wan.json
+      - source: wil_config
+        target: /keripy/scripts/keri/cf/main/wil.json
+      - source: wes_config
+        target: /keripy/scripts/keri/cf/main/wes.json
+      - source: wit_config
+        target: /keripy/scripts/keri/cf/main/wit.json
+      - source: wub_config
+        target: /keripy/scripts/keri/cf/main/wub.json
+      - source: wyz_config
+        target: /keripy/scripts/keri/cf/main/wyz.json
+    healthcheck:
+      test: python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5642/oobi')"
+      <<: *healthcheck
+    ports:
+      - "5642:5642"
+      - "5643:5643"
+      - "5644:5644"
+      - "5645:5645"
+      - "5646:5646"
+      - "5647:5647"
+    depends_on:
+      vlei-server:
+        condition: service_healthy
+
+  keria:
+    image: gleif/keria:0.3.0
+    container_name: vlei-keria
+    environment:
+      - KERI_AGENT_CORS=True
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=UTF-8
+    configs:
+      - source: keria_config
+        target: /keria/config/keri/cf/keria.json
+    entrypoint: ["keria", "start", "--config-dir", "/keria/config",
+                 "--config-file", "keria", "--name", "agent", "--loglevel", "INFO"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--tries=1", "--no-verbose",
+             "http://127.0.0.1:3902/spec.yaml"]
+      <<: *healthcheck
+    ports:
+      - "3901:3901"   # admin
+      - "3902:3902"   # agent / boot-facing
+      - "3903:3903"   # boot
+    depends_on:
+      vlei-server:
+        condition: service_healthy
+      witness-demo:
+        condition: service_healthy
+
+  sally-hook:
+    image: gleif/sally:1.0.2
+    container_name: vlei-sally-hook
+    stop_grace_period: 1s
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=UTF-8
+      - PYTHONWARNINGS=ignore::SyntaxWarning
+    entrypoint: ["sally", "hook", "demo"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--tries=1", "--no-verbose",
+             "http://127.0.0.1:9923/health"]
+      <<: *healthcheck
+    ports:
+      - "9923:9923"

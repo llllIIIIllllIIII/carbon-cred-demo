@@ -1,0 +1,17 @@
+# 沙盒狀態：內含私鑰種子，絕對不可提交
+.vlei/
+presentation.json
+*.mmd
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Claude Code 本機設定
+.claude/settings.local.json
+
+# 作業系統
+.DS_Store
+Thumbs.db
