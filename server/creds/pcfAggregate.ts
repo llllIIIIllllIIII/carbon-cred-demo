@@ -27,7 +27,7 @@ import { buildIssuerInstance } from './issuer';
 import { verifyCompactSdJwt } from './verifier';
 import { statusListUri } from '../statuslist';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
-import { getCredential, upsertCredential } from './store';
+import { getCredential, insertCredentialIfAbsent } from './store';
 import { issuePcfUpstream } from './pcfUpstream';
 import { CODES, type ReasonCode } from '../../shared/codes';
 import {
@@ -117,14 +117,21 @@ export interface PcfAggregateIssuance {
   contractCarbonMax: number;
 }
 
-/** 取得(必要時依幕 1 邏輯先簽發並入庫)該案 pcf_upstream,回傳其 sd_jwt。 */
+/**
+ * 取得(必要時依幕 1 邏輯先簽發並入庫)該案 pcf_upstream,回傳其 sd_jwt。
+ * Codex 審查發現 1(併發競態)修法:先前「讀→await 簽章→無條件 upsert」在兩個併發請求下會各自簽出
+ * 內容相同、位元組不同的 SD-JWT(隨機 disclosure 鹽),upsert 互相覆蓋,導致此處回傳值與「稍後實際
+ * 落庫」的版本不一致——本函式與呼叫端(issuePcfAggregate)之間的 precursor_ref.hash 就可能對不上
+ * DB 裡最終那份上游憑證。改用 insertCredentialIfAbsent(原子 INSERT OR IGNORE + 重讀):不論本次簽發
+ * 是否贏得競態,一律回傳落庫勝者的 sd_jwt,確保 precursor_ref 永遠對得上 DB 現況。
+ */
 async function ensureUpstreamCredential(db: Database.Database, caseId: PcfAggregateCaseId): Promise<{ sdJwt: string }> {
   const id = `pcf_upstream-${caseId}`;
   const existing = getCredential(db, id);
   if (existing) return { sdJwt: existing.sd_jwt };
 
   const issuance = await issuePcfUpstream(caseId);
-  upsertCredential(db, {
+  const { row } = insertCredentialIfAbsent(db, {
     id: issuance.id,
     type: 'pcf_upstream',
     caseId: issuance.caseId,
@@ -138,7 +145,7 @@ async function ensureUpstreamCredential(db: Database.Database, caseId: PcfAggreg
     validFrom: issuance.validFrom,
     validUntil: issuance.validUntil,
   });
-  return { sdJwt: issuance.sdJwt };
+  return { sdJwt: row.sd_jwt };
 }
 
 /** 簽出 pcf_aggregate(鴻鋼 sandbox LE AID 鑰);不寫入 DB——由呼叫端(route)負責 upsertCredential。 */

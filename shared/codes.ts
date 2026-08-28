@@ -3,6 +3,9 @@
  * 介面文案一律繁體中文;理由碼一律引用此處英文常數,不得散落字串字面值。
  */
 export const CODES = {
+  // 輸入驗證(Codex 審查發現 2:case_id 缺值/打錯字不得靜默塌成合法值)
+  INVALID_CASE_ID: 'INVALID_CASE_ID',
+
   // 政策決策
   POLICY_P1_PERMIT: 'POLICY_P1_PERMIT',
   POLICY_P2_CONFIDENTIAL: 'POLICY_P2_CONFIDENTIAL',

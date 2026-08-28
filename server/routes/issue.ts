@@ -14,6 +14,13 @@
  * 上游 sd_jwt,信任鏈靜默斷裂。改為冪等:該 case 已存在 credentials 表就直接回既有憑證
  * (reused:true),不重簽、不覆寫。要重來一組全新資料一律走 make demo-reset(清 DB 重 seed),
  * 不提供 force 參數繞過冪等。
+ *
+ * Codex 審查發現 1(併發競態)修法:上面的冪等檢查本身是「讀→await 簽章→upsert」,兩個併發請求仍
+ * 可能都讀到「未入庫」而各自簽出不同 token。改用 server/creds/store.ts 的 insertCredentialIfAbsent
+ * (原子 INSERT OR IGNORE + 重讀落庫勝者)——回應一律以落庫勝者為準,自己輸掉競態就視同 reused。
+ *
+ * Codex 審查發現 2(case_id 靜默塌縮)修法:過去 `case_id === 'B' ? 'B' : 'A'` 會讓缺值或打錯字
+ * 一律塌成 'A' 並真簽發憑證。改為顯式驗證,非 'A'/'B' 一律 400 + CODES.INVALID_CASE_ID。
  */
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
@@ -21,17 +28,25 @@ import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
 import { issuePcfUpstream } from '../creds/pcfUpstream';
 import { verifyCompactSdJwt } from '../creds/verifier';
 import { tamperPayloadByte } from '../creds/tamper';
-import { getCredential, upsertCredential } from '../creds/store';
+import { getCredential, insertCredentialIfAbsent } from '../creds/store';
+import { CODES } from '../../shared/codes';
 import type { PcfUpstreamCaseId } from '../../shared/types';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function parseCaseId(caseId: unknown): PcfUpstreamCaseId | null {
+  return caseId === 'A' || caseId === 'B' ? caseId : null;
+}
+
 export function registerIssueRoutes(app: FastifyInstance): void {
   app.post('/api/issue/upstream', async (req, reply) => {
     const body = (req.body ?? {}) as { case_id?: string };
-    const caseId: PcfUpstreamCaseId = body.case_id === 'B' ? 'B' : 'A';
+    const caseId = parseCaseId(body.case_id);
+    if (!caseId) {
+      return reply.code(400).send({ error: 'case_id 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
+    }
     const id = `pcf_upstream-${caseId}`;
 
     const db = openDb();
@@ -60,8 +75,11 @@ export function registerIssueRoutes(app: FastifyInstance): void {
         return reply.code(500).send({ error: errorMessage(e) });
       }
 
+      // 併發防護(發現 1):原子 get-or-create——回應一律以落庫勝者為準,自己輸了就丟棄剛簽的 token。
+      let row: ReturnType<typeof insertCredentialIfAbsent>['row'];
+      let reused: boolean;
       try {
-        upsertCredential(db, {
+        const result = insertCredentialIfAbsent(db, {
           id: issuance.id,
           type: 'pcf_upstream',
           caseId: issuance.caseId,
@@ -75,21 +93,23 @@ export function registerIssueRoutes(app: FastifyInstance): void {
           validFrom: issuance.validFrom,
           validUntil: issuance.validUntil,
         });
+        row = result.row;
+        reused = result.reused;
       } catch (e) {
         return reply.code(500).send({ error: `DB 寫入失敗:${errorMessage(e)}(先跑 make setup / make seed)` });
       }
 
       return {
-        id: issuance.id,
-        case_id: issuance.caseId,
-        sd_jwt: issuance.sdJwt,
-        claims: issuance.payload,
-        issued_at: issuance.issuedAt,
-        valid_from: issuance.validFrom,
-        valid_until: issuance.validUntil,
-        issuer_party: issuance.issuerParty,
-        holder_party: issuance.holderParty,
-        reused: false,
+        id: row.id,
+        case_id: caseId,
+        sd_jwt: row.sd_jwt,
+        claims: JSON.parse(row.payload_json) as Record<string, unknown>,
+        issued_at: row.issued_at,
+        valid_from: row.valid_from,
+        valid_until: row.valid_until,
+        issuer_party: row.issuer_party,
+        holder_party: row.holder_party,
+        reused,
       };
     } finally {
       db.close();

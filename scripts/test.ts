@@ -20,10 +20,11 @@ import { spawnSync } from 'node:child_process';
 import { jwtVerify, decodeProtectedHeader } from 'jose';
 import { splitSdJwt, decodeJwt } from '@sd-jwt/core';
 import { buildServer } from '../server/index';
-import { ROOT } from '../server/db';
+import { ROOT, openDb } from '../server/db';
 import { loadSandboxKey, publicKeyFromQb64 } from '../server/keys';
 import { STATUS_MEDIA_TYPE, STATUS_LIST_SIZE, statusListUri } from '../server/statuslist';
 import { verifyCompactSdJwt } from '../server/creds/verifier';
+import { insertCredentialIfAbsent } from '../server/creds/store';
 import { CODES } from '../shared/codes';
 import {
   PCF_UPSTREAM_PUBLIC_FIELDS,
@@ -205,7 +206,13 @@ async function main() {
       // (a) issue 回傳可解析 SD-JWT
       const issueRes = await app1.inject({ method: 'POST', url: '/api/issue/upstream', payload: { case_id: 'A' } });
       check('POST /api/issue/upstream 回 200', issueRes.statusCode === 200, `status=${issueRes.statusCode} body=${issueRes.body.slice(0, 200)}`);
-      const issued = issueRes.json() as { sd_jwt: string; claims: Record<string, unknown>; issued_at: string };
+      const issued = issueRes.json() as {
+        sd_jwt: string;
+        claims: Record<string, unknown>;
+        issued_at: string;
+        valid_from: string;
+        valid_until: string;
+      };
 
       let jwtPart = '';
       let disclosureCount = -1;
@@ -307,9 +314,20 @@ async function main() {
         JSON.stringify(status),
       );
 
-      // (f) issued_at 回填約三個月前(規格v2:273,效期涵蓋 2026-Q3)
-      const daysAgo = (Date.now() - Date.parse(`${issued.issued_at}T00:00:00Z`)) / 86400000;
-      check(`issued_at(${issued.issued_at})落在約三個月前區間(60–120 天)`, daysAgo >= 60 && daysAgo <= 120, `daysAgo=${daysAgo.toFixed(1)}`);
+      // (f) issued_at/效期為固定 seed 值(規格v2:273「issued_at 回填約三個月前」之意圖已由 seed 固定
+      //     值承載)——Codex 審查發現 3:改斷言固定事實,不再用 Date.now() 換算天數,避免驗收測試
+      //     隨真實時間推移而翻紅。
+      check(
+        `issued_at(${issued.issued_at})與 data/seed.json pcf_defaults.issued_at 一致`,
+        issued.issued_at === seed.pcf_defaults.issued_at,
+        `got=${issued.issued_at} expected=${seed.pcf_defaults.issued_at}`,
+      );
+      check(
+        `效期涵蓋 2026-Q3(valid_from ${issued.valid_from} ≤ 2026-07-01 且 valid_until ${issued.valid_until} ≥ 2026-09-30)`,
+        Date.parse(`${issued.valid_from}T00:00:00Z`) <= Date.parse('2026-07-01T00:00:00Z') &&
+          Date.parse(`${issued.valid_until}T00:00:00Z`) >= Date.parse('2026-09-30T00:00:00Z'),
+        `valid_from=${issued.valid_from} valid_until=${issued.valid_until}`,
+      );
     } finally {
       await app1.close();
     }
@@ -333,6 +351,8 @@ async function main() {
         };
         precursor_ref: { id: string; hash: string };
         issued_at: string;
+        valid_from: string;
+        valid_until: string;
       };
       const byCase: Record<'A' | 'B', { agg: AggResult; upstreamSdJwt: string; upstreamIssuedAt: string }> = {} as any;
 
@@ -424,19 +444,173 @@ async function main() {
         `got=${(A as unknown as { contract_carbon_max?: number }).contract_carbon_max} expected=${seed.transaction.contract_carbon_max}`,
       );
 
-      // (h) issued_at 回填約三個月前,且晚於上游憑證 issued_at(信任鏈時序合理,規格v2:273)
-      const daysAgo = (Date.now() - Date.parse(`${A.issued_at}T00:00:00Z`)) / 86400000;
-      check(`pcf_aggregate issued_at(${A.issued_at})落在約三個月前區間(60–120 天)`, daysAgo >= 60 && daysAgo <= 120, `daysAgo=${daysAgo.toFixed(1)}`);
+      // (h) issued_at/效期為固定 seed 值,且晚於上游憑證 issued_at(信任鏈時序合理,規格v2:273「issued_at
+      //     回填約三個月前」之意圖已由 seed 固定值承載)——Codex 審查發現 3:改斷言固定事實,不再用
+      //     Date.now() 換算天數,避免驗收測試隨真實時間推移而翻紅。
+      check(
+        `pcf_aggregate issued_at(${A.issued_at})與 data/seed.json aggregate_defaults.issued_at 一致`,
+        A.issued_at === agg.issued_at,
+        `got=${A.issued_at} expected=${agg.issued_at}`,
+      );
       check(
         `pcf_aggregate issued_at(${A.issued_at})晚於上游 pcf_upstream issued_at(${byCase.A.upstreamIssuedAt})`,
         Date.parse(`${A.issued_at}T00:00:00Z`) > Date.parse(`${byCase.A.upstreamIssuedAt}T00:00:00Z`),
+      );
+      check(
+        `pcf_aggregate 效期涵蓋 2026-Q3(valid_from ${A.valid_from} ≤ 2026-07-01 且 valid_until ${A.valid_until} ≥ 2026-09-30)`,
+        Date.parse(`${A.valid_from}T00:00:00Z`) <= Date.parse('2026-07-01T00:00:00Z') &&
+          Date.parse(`${A.valid_until}T00:00:00Z`) >= Date.parse('2026-09-30T00:00:00Z'),
+        `valid_from=${A.valid_from} valid_until=${A.valid_until}`,
       );
     } finally {
       await app2.close();
     }
   }
 
-  // 10) 一致性守門
+  // 10) Codex 審查回歸鎖(2026-08-29 定案):發現 1(併發競態)+ 發現 2(case_id 顯式驗證)
+  {
+    const app3 = buildServer();
+    try {
+      // (a0) 發現 1(併發競態)——直接鎖定 server/creds/store.ts 的原子 get-or-create 語意:
+      //      HTTP 層以 Promise.all 併發打 app.inject() 在本測試環境下無法可靠重現交錯執行(fastify
+      //      inject() + 全同步 better-sqlite3 使兩個請求實質序列化,經 5+ 次重跑驗證皆未觀察到交錯,
+      //      即使暫時退回舊版「無條件 upsert」語意也不會讓下方 (a)/(b) 的 HTTP 併發測項翻紅——因此
+      //      不能只靠 HTTP 層測項自證修法有效)。改為直接呼叫 insertCredentialIfAbsent 模擬「兩個
+      //      已各自簽完、只等寫入」的並行呼叫(真實併發時哪個先簽完無法保證,但無論順序為何,原子
+      //      語意都必須滿足):先到者必須落庫(reused=false);後到者必須被忽略,且回傳值改採先到者
+      //      版本(reused=true,不得覆寫、不得回傳自己剛簽的 token)。此區塊經 mutation testing 驗證
+      //      (退回舊版無條件 upsert 語意會使其翻紅,詳見交付報告)。
+      const primDb = openDb();
+      primDb.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_upstream-A');
+      const raceBaseRec = {
+        id: 'pcf_upstream-A',
+        type: 'pcf_upstream',
+        caseId: 'A',
+        issuerParty: 'thepviet',
+        holderParty: 'hunggang',
+        payload: { note: 'race-primitive-self-test' },
+        statusIdx: 0,
+        statusUri: statusListUri('credentials'),
+        issuedAt: '2026-05-29',
+        validFrom: '2026-05-29',
+        validUntil: '2026-12-31',
+      };
+      const raceFirst = insertCredentialIfAbsent(primDb, { ...raceBaseRec, sdJwt: 'race-token-first' });
+      const raceSecond = insertCredentialIfAbsent(primDb, { ...raceBaseRec, sdJwt: 'race-token-second' });
+      check(
+        '發現 1(併發競態,store.ts 原子語意):先到者插入成功(reused=false)',
+        raceFirst.reused === false && raceFirst.row.sd_jwt === 'race-token-first',
+        `reused=${raceFirst.reused} sd_jwt=${raceFirst.row.sd_jwt}`,
+      );
+      check(
+        '發現 1(併發競態,store.ts 原子語意):後到者輸掉競態(reused=true),回傳值改採先到者版本(不是自己剛簽的 token)',
+        raceSecond.reused === true && raceSecond.row.sd_jwt === 'race-token-first',
+        `reused=${raceSecond.reused} row.sd_jwt=${raceSecond.row.sd_jwt}`,
+      );
+      const primRows = primDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_upstream-A') as { sd_jwt: string }[];
+      check(
+        '發現 1(併發競態,store.ts 原子語意):credentials 表該案只有一列,且內容為先到者版本(未被後到者覆寫)',
+        primRows.length === 1 && primRows[0].sd_jwt === 'race-token-first',
+        `rows=${primRows.length} sd_jwt=${primRows[0]?.sd_jwt}`,
+      );
+      primDb.close();
+
+      // (a) 發現 1(併發競態,server/routes/issue.ts 呼叫路徑):先清空案 A 上游列(不依賴前面測項
+      //     殘留),再併發打兩個 /api/issue/upstream(同案 A)。若各自讀到「未入庫」而各自簽出不同
+      //     token(SD-JWT 含隨機 disclosure 鹽),兩份回應的 sd_jwt 會不同——用兩個呼叫者「各自看到
+      //     的回應」互相比對(不只是跟 DB 比),不受哪一方先簽/後寫的執行順序影響,才能可靠抓到回歸。
+      const raceDb = openDb();
+      raceDb.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_upstream-A');
+      raceDb.close();
+
+      const [raceIssue1, raceIssue2] = await Promise.all([
+        app3.inject({ method: 'POST', url: '/api/issue/upstream', payload: { case_id: 'A' } }),
+        app3.inject({ method: 'POST', url: '/api/issue/upstream', payload: { case_id: 'A' } }),
+      ]);
+      const issueBody1 = raceIssue1.json() as { sd_jwt: string; reused?: boolean };
+      const issueBody2 = raceIssue2.json() as { sd_jwt: string; reused?: boolean };
+      check(
+        '發現 1(併發競態):併發兩個 POST /api/issue/upstream(案 A)皆回 200',
+        raceIssue1.statusCode === 200 && raceIssue2.statusCode === 200,
+        `status1=${raceIssue1.statusCode} status2=${raceIssue2.statusCode}`,
+      );
+      check(
+        '發現 1(併發競態):兩個呼叫者收到的 sd_jwt 相同(輸掉競態者改採落庫勝者,不各自保留自己剛簽的 token)',
+        issueBody1.sd_jwt === issueBody2.sd_jwt,
+        `sd_jwt1=${issueBody1.sd_jwt?.slice(0, 24)}… sd_jwt2=${issueBody2.sd_jwt?.slice(0, 24)}…`,
+      );
+      check(
+        '發現 1(併發競態):兩個呼叫者之一 reused=true(輸掉競態等同冪等重用,而非各自真簽一份)',
+        issueBody1.reused !== issueBody2.reused && (issueBody1.reused === true || issueBody2.reused === true),
+        `reused1=${issueBody1.reused} reused2=${issueBody2.reused}`,
+      );
+
+      const raceDbCheck = openDb();
+      const upstreamRowsA = raceDbCheck.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_upstream-A') as { sd_jwt: string }[];
+      raceDbCheck.close();
+      check(
+        '發現 1(併發競態):credentials 表 pcf_upstream-A 該案只有一列',
+        upstreamRowsA.length === 1,
+        `rows=${upstreamRowsA.length}`,
+      );
+
+      // (b) 發現 1(併發競態,server/creds/pcfAggregate.ts ensureUpstreamCredential 呼叫路徑):
+      //     清空案 B 上游/聚合列,併發打兩個 /api/aggregate(同案 B)。同理,用兩份聚合回應的
+      //     precursor_ref.hash 互相比對(不只是跟 DB 比)——同一案只能有一個合法上游,兩份聚合
+      //     若引用不同雜湊,代表兩個呼叫者各自簽了一份不同的上游 token,信任鏈已經分岔。
+      const raceDb2 = openDb();
+      raceDb2.prepare('DELETE FROM credentials WHERE id IN (?, ?)').run('pcf_upstream-B', 'pcf_aggregate-B');
+      raceDb2.close();
+
+      const [raceAgg1, raceAgg2] = await Promise.all([
+        app3.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'B' } }),
+        app3.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'B' } }),
+      ]);
+      const aggBody1 = raceAgg1.json() as { precursor_ref?: { hash?: string } };
+      const aggBody2 = raceAgg2.json() as { precursor_ref?: { hash?: string } };
+      check(
+        '發現 1(併發競態):併發兩個 POST /api/aggregate(案 B)皆回 200',
+        raceAgg1.statusCode === 200 && raceAgg2.statusCode === 200,
+        `status1=${raceAgg1.statusCode} status2=${raceAgg2.statusCode}`,
+      );
+      check(
+        '發現 1(併發競態):兩份聚合回應的 precursor_ref.hash 相同(同一案只有一個合法上游,不得分岔)',
+        !!aggBody1.precursor_ref?.hash && aggBody1.precursor_ref?.hash === aggBody2.precursor_ref?.hash,
+        `hash1=${aggBody1.precursor_ref?.hash?.slice(0, 12)} hash2=${aggBody2.precursor_ref?.hash?.slice(0, 12)}`,
+      );
+
+      const raceDbCheck2 = openDb();
+      const upstreamRowsB = raceDbCheck2.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_upstream-B') as { sd_jwt: string }[];
+      raceDbCheck2.close();
+      const sha256HexRace = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+      check(
+        '發現 1(併發競態):credentials 表 pcf_upstream-B 該案只有一列,且聚合 precursor_ref.hash === sha256(落庫上游 sd_jwt)',
+        upstreamRowsB.length === 1 && aggBody1.precursor_ref?.hash === sha256HexRace(upstreamRowsB[0]?.sd_jwt ?? ''),
+        `rows=${upstreamRowsB.length} dbHash=${upstreamRowsB[0] ? sha256HexRace(upstreamRowsB[0].sd_jwt).slice(0, 12) : 'N/A'} aggHash=${aggBody1.precursor_ref?.hash?.slice(0, 12)}`,
+      );
+
+      // (b) 發現 2(case_id 顯式驗證):缺值與打錯字一律 400 + INVALID_CASE_ID,不得靜默塌成 'A' 真簽憑證。
+      const negCases: Array<{ url: string; payload: Record<string, unknown> }> = [
+        { url: '/api/issue/upstream', payload: {} },
+        { url: '/api/issue/upstream', payload: { case_id: 'X' } },
+        { url: '/api/aggregate', payload: {} },
+        { url: '/api/aggregate', payload: { case_id: 'X' } },
+      ];
+      for (const { url, payload } of negCases) {
+        const res = await app3.inject({ method: 'POST', url, payload });
+        const body = res.json() as { reason_code?: string };
+        check(
+          `發現 2(case_id 驗證):POST ${url} payload=${JSON.stringify(payload)} 回 400 + INVALID_CASE_ID`,
+          res.statusCode === 400 && body.reason_code === CODES.INVALID_CASE_ID,
+          `status=${res.statusCode} body=${res.body}`,
+        );
+      }
+    } finally {
+      await app3.close();
+    }
+  }
+
+  // 11) 一致性守門
   const violations = consistencyScan();
   check('一致性守門(docs/ 與程式目錄)', violations.length === 0);
   for (const v of violations.slice(0, 20)) console.log(`      ${v}`);

@@ -6,21 +6,32 @@
  *     入 credentials 表。pcf_aggregate 不含上游任何明細欄位,precursor_ref 僅留上游憑證
  *     id + sha256 hash(藍圖:150)。
  * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / issuePcfAggregate 取得。
+ *
+ * Codex 審查發現 2(case_id 靜默塌縮)修法:過去 `case_id === 'B' ? 'B' : 'A'` 會讓缺值或打錯字
+ * 一律塌成 'A' 並真簽發憑證。改為顯式驗證,非 'A'/'B' 一律 400 + CODES.INVALID_CASE_ID。
  */
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
 import { issuePcfAggregate, UpstreamVerificationError } from '../creds/pcfAggregate';
 import { upsertCredential } from '../creds/store';
+import { CODES } from '../../shared/codes';
 import type { PcfAggregateCaseId } from '../../shared/types';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function parseCaseId(caseId: unknown): PcfAggregateCaseId | null {
+  return caseId === 'A' || caseId === 'B' ? caseId : null;
+}
+
 export function registerAggregateRoutes(app: FastifyInstance): void {
   app.post('/api/aggregate', async (req, reply) => {
     const body = (req.body ?? {}) as { case_id?: string };
-    const caseId: PcfAggregateCaseId = body.case_id === 'B' ? 'B' : 'A';
+    const caseId = parseCaseId(body.case_id);
+    if (!caseId) {
+      return reply.code(400).send({ error: 'case_id 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
+    }
 
     const db = openDb();
     try {
