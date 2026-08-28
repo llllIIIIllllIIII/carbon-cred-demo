@@ -6,6 +6,11 @@ import { ROOT, openDbIfExists } from './db';
 import { readStatusListToken, STATUS_MEDIA_TYPE, STATUS_LIST_NAMES, type StatusListName } from './statuslist';
 import { registerIssueRoutes } from './routes/issue';
 import { registerAggregateRoutes } from './routes/aggregate';
+import { registerMandateRoutes } from './routes/mandates';
+import { registerDiscloseRoutes } from './routes/disclose';
+import { registerVerifyRoutes } from './routes/verify';
+import { registerDemoRoutes } from './routes/demo';
+import { registerPolicyRoutes } from './routes/policies';
 
 const MANIFEST_PATH = path.join(ROOT, 'data', 'vlei', 'manifest.json');
 
@@ -51,6 +56,11 @@ export function buildServer() {
 
   registerIssueRoutes(app);
   registerAggregateRoutes(app);
+  registerMandateRoutes(app);
+  registerDiscloseRoutes(app);
+  registerVerifyRoutes(app);
+  registerDemoRoutes(app);
+  registerPolicyRoutes(app);
 
   return app;
 }

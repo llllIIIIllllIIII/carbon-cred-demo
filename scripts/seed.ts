@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, DB_PATH, openDb } from '../server/db';
-import { ensureWorkloadKeys } from '../server/keys';
+import { ensureWorkloadKeys, writePublicVleiState } from '../server/keys';
 import {
   buildAndWriteStatusList,
   statusListUri,
@@ -32,6 +32,11 @@ async function main() {
 
   const kids = ensureWorkloadKeys();
   console.log(`workload 鑰:hunggang-workload kid=${kids['hunggang-workload'].slice(0, 12)}… / bruck-workload kid=${kids['bruck-workload'].slice(0, 12)}…`);
+
+  // H3:匯出 .vlei/state.json 的公開子集(去 seed/next_seed)供 Bruck 端 sandbox verify 使用,
+  // 使驗證端只讀 data/vlei/(CLAUDE.md:25);唯一讀 state.json 的模組仍是 server/keys.ts。
+  const publicStateFile = writePublicVleiState();
+  console.log(`vLEI 公開狀態(不含私鑰種子):${path.relative(ROOT, publicStateFile)}`);
 
   // 重建 DB
   for (const suffix of ['', '-wal', '-shm']) {

@@ -39,6 +39,37 @@ export interface MandateBase {
   status: CredentialStatus;
 }
 
+/** 'M1' | 'M2'(db/schema.sql mandates.id 之固定值;非 mandate.jti)。 */
+export type MandateId = 'M1' | 'M2';
+
+/**
+ * mandate 簽發時之完整 compact JWT payload(幕 3 前置;架構決策 §4:POST /api/mandates)——
+ * MandateBase 的展示用 valid_from/valid_until(ISO 日期字串)之外,另附 JWT 註冊聲明
+ * iat/nbf/exp(epoch seconds),供閘道以 jose jwtVerify 驗 iss/aud/exp/jti(impl-spec §0 驗證順序)。
+ * query_cap/purpose/agent_id 為選配(M1/M2 內容不完全相同;規格v2 §5.1/5.2)。
+ */
+export interface MandatePayload extends MandateBase {
+  iat: number;
+  nbf: number;
+  exp: number;
+  query_cap?: number;
+  purpose?: string;
+  agent_id?: string;
+}
+
+/**
+ * disclose request(幕 3/4)之 compact JWS payload——由 bruck-workload(或 hunggang-workload)鑰
+ * 簽章,header.kid 須等於對應 mandate.delegate_kid(impl-spec §2)。
+ */
+export interface DiscloseRequestPayload {
+  /** 對應 mandate 之 jti(非 db mandates.id)。 */
+  mandate_id: string;
+  case_id: PcfAggregateCaseId;
+  requested_claims: string[];
+  request_nonce: string;
+  iat: number;
+}
+
 /** Cedar 前之可信 context 布林(後端預驗證產出;政策僅消費布林)。 */
 export interface TrustedContext {
   mandate_status_ok: boolean;

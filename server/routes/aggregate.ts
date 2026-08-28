@@ -13,7 +13,6 @@
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
 import { issuePcfAggregate, UpstreamVerificationError } from '../creds/pcfAggregate';
-import { upsertCredential } from '../creds/store';
 import { CODES } from '../../shared/codes';
 import type { PcfAggregateCaseId } from '../../shared/types';
 
@@ -35,6 +34,9 @@ export function registerAggregateRoutes(app: FastifyInstance): void {
 
     const db = openDb();
     try {
+      // issuePcfAggregate 內部已原子落庫(遺留 c:insertCredentialIfAbsent,比照 store.ts 模式)——
+      // 本路由不得再自行 upsertCredential,否則會用「這次呼叫者自己的版本」覆寫落庫勝者,
+      // 重新引入遺留 c 要修的併發競態。
       let issuance: Awaited<ReturnType<typeof issuePcfAggregate>>;
       try {
         issuance = await issuePcfAggregate(db, caseId);
@@ -43,25 +45,6 @@ export function registerAggregateRoutes(app: FastifyInstance): void {
           return reply.code(502).send({ error: e.message, reason_code: e.reasonCode });
         }
         return reply.code(500).send({ error: errorMessage(e) });
-      }
-
-      try {
-        upsertCredential(db, {
-          id: issuance.id,
-          type: 'pcf_aggregate',
-          caseId: issuance.caseId,
-          issuerParty: issuance.issuerParty,
-          holderParty: issuance.holderParty,
-          sdJwt: issuance.sdJwt,
-          payload: issuance.payload,
-          statusIdx: issuance.statusIdx,
-          statusUri: issuance.statusUri,
-          issuedAt: issuance.issuedAt,
-          validFrom: issuance.validFrom,
-          validUntil: issuance.validUntil,
-        });
-      } catch (e) {
-        return reply.code(500).send({ error: `DB 寫入失敗:${errorMessage(e)}(先跑 make setup / make seed)` });
       }
 
       return {

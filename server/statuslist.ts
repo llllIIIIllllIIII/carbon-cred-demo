@@ -10,8 +10,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { StatusList, createHeaderAndPayload, JWT_STATUS_LIST_TYPE } from '@owf/token-status-list';
-import { SignJWT } from 'jose';
+import type { KeyObject } from 'node:crypto';
+import { StatusList, createHeaderAndPayload, getListFromStatusListJWT, JWT_STATUS_LIST_TYPE, StatusType } from '@owf/token-status-list';
+import { SignJWT, jwtVerify, decodeProtectedHeader } from 'jose';
 import { ROOT } from './db';
 import { loadSandboxKey } from './keys';
 
@@ -55,4 +56,41 @@ export async function buildAndWriteStatusList(name: StatusListName, statuses?: n
 export function readStatusListToken(name: StatusListName): string | null {
   const f = statusListFile(name);
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf-8').trim() : null;
+}
+
+export interface StatusBitCheckResult {
+  /** 簽章驗證與 lst 解碼皆成功(不代表未撤銷,見 revoked)。 */
+  ok: boolean;
+  revoked: boolean;
+  error?: string;
+}
+
+/**
+ * 驗證方共用入口(幕 3 Bruck 端 / 閘道 mandate 撤銷查驗皆呼叫此函式)——
+ * 先驗 compact JWS 簽章(issuerPublicKey,取自 manifest 公開材料),簽章不過直接回錯,
+ * 不解碼任何內容;簽章通過後檢查 header.typ(L3:draft-ietf-oauth-status-list-21 要求
+ * typ="statuslist+jwt",不驗 typ 等於接受任何同鑰簽出的 JWT 冒充狀態清單),
+ * 最後才用 @owf/token-status-list 解碼 status_list.bits/lst 查 idx。
+ */
+export async function checkStatusBit(token: string, idx: number, issuerPublicKey: KeyObject): Promise<StatusBitCheckResult> {
+  try {
+    await jwtVerify(token, issuerPublicKey);
+  } catch (e) {
+    return { ok: false, revoked: false, error: `Status List Token 簽章驗證失敗:${e instanceof Error ? e.message : String(e)}` };
+  }
+  try {
+    const header = decodeProtectedHeader(token);
+    if (header.typ !== JWT_STATUS_LIST_TYPE) {
+      return { ok: false, revoked: false, error: `Status List Token header.typ 不是 "${JWT_STATUS_LIST_TYPE}"(typ=${header.typ ?? '(無)'})` };
+    }
+  } catch (e) {
+    return { ok: false, revoked: false, error: `Status List Token header 解析失敗:${e instanceof Error ? e.message : String(e)}` };
+  }
+  try {
+    const list = getListFromStatusListJWT(token);
+    const status = list.getStatus(idx);
+    return { ok: true, revoked: status !== StatusType.Valid };
+  } catch (e) {
+    return { ok: false, revoked: false, error: `status_list.bits/lst 解碼失敗:${e instanceof Error ? e.message : String(e)}` };
+  }
 }

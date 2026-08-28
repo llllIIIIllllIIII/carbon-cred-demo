@@ -15,6 +15,25 @@ export interface ManifestRole {
 }
 export type Manifest = Record<string, ManifestRole>;
 
+/**
+ * 幕 3/4 最近一次 disclose 結果(App 層狀態提升)——Tab2/Tab3 於本 SPA 以條件渲染切換,
+ * 切分頁時前一個分頁會卸載、本地 state 隨之歸零,故 Tab2 的 Cedar 決策面板/請求收件匣/
+ * DenyStamp 需要的資訊由 Tab3 呼叫 /api/disclose 後主動寫入此處(純前端狀態提升,
+ * 未新增/更動任何伺服端 route)。
+ */
+export interface DiscloseEvent {
+  /** /api/audit 最新 seq(呼叫完成後讀取,供「#req-NN」顯示;讀不到時為 null)。 */
+  auditSeq: number | null;
+  requestedClaims: string[];
+  caseId: 'A' | 'B';
+  nonce: string;
+  decision: 'PERMIT' | 'DENY' | 'REPLAY_DETECTED';
+  policyId?: 'P1' | 'P2';
+  reasonCode: string;
+  presentation?: string;
+  at: string;
+}
+
 const TABS = [
   { id: 'thepviet', label: '越南廠' },
   { id: 'gateway', label: '鴻鋼閘道' },
@@ -27,6 +46,7 @@ type TabId = (typeof TABS)[number]['id'];
 export function App() {
   const [tab, setTab] = useState<TabId>('thepviet');
   const [manifest, setManifest] = useState<Manifest | null>(null);
+  const [lastDisclose, setLastDisclose] = useState<DiscloseEvent | null>(null);
 
   useEffect(() => {
     fetch('/api/manifest')
@@ -57,8 +77,8 @@ export function App() {
       </nav>
       <main style={{ flex: 1, padding: 16 }}>
         {tab === 'thepviet' && <ThepViet manifest={manifest} />}
-        {tab === 'gateway' && <Gateway manifest={manifest} />}
-        {tab === 'bruck' && <BruckAgent manifest={manifest} />}
+        {tab === 'gateway' && <Gateway manifest={manifest} lastDisclose={lastDisclose} />}
+        {tab === 'bruck' && <BruckAgent manifest={manifest} onDisclose={setLastDisclose} />}
         {tab === 'audit' && <Audit manifest={manifest} />}
       </main>
       <AuditStrip />

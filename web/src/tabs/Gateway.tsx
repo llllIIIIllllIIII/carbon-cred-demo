@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import type { Manifest } from '../App';
+import { useEffect, useState } from 'react';
+import type { Manifest, DiscloseEvent } from '../App';
 import { LeiBadge } from './badge';
 import { StackChart } from '../components/StackChart';
+import { DenyStamp } from '../components/DenyStamp';
 
 type CaseId = 'A' | 'B';
 
@@ -41,12 +42,37 @@ const CASE_LABELS: Record<CaseId, string> = {
   B: '案 B · 上游 BF-BOF 高爐轉爐(較高碳)',
 };
 
+interface PoliciesResponse {
+  p1: string;
+  p2: string;
+}
+
+const REASON_LABELS_P2: Record<string, string> = {
+  POLICY_P2_CONFIDENTIAL: '越界索取機密標籤欄位(machine_energy 等)',
+  REPLAY_DETECTED: '重放:同一 (mandate_id, request_nonce) 已出示過',
+  CLAIM_NOT_IN_MANDATE: '請求欄位不在 mandate.allowed_claims 範圍內',
+};
+
 /** Tab 2 · 鴻鋼閘道(幕 2:聚合;架構決策 §4 POST /api/aggregate)。 */
-export function Gateway({ manifest }: { manifest: Manifest | null }) {
+export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null; lastDisclose?: DiscloseEvent | null }) {
   const [caseId, setCaseId] = useState<CaseId>('A');
   const [result, setResult] = useState<AggregateResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [policies, setPolicies] = useState<PoliciesResponse | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/policies')
+      .then((r) => (r.ok ? (r.json() as Promise<PoliciesResponse>) : null))
+      .then((data) => {
+        if (alive) setPolicies(data);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   async function handleAggregate() {
     setBusy(true);
@@ -118,7 +144,76 @@ export function Gateway({ manifest }: { manifest: Manifest | null }) {
           </div>
         </>
       )}
+
+      {/* 幕 3/4:請求收件匣 + Cedar 決策面板(藍圖:70, 73)。資料來源為 Tab3 呼叫 /api/disclose
+          後主動提升至 App 層的 lastDisclose 狀態——本 SPA 切分頁時前一分頁會卸載,故不倚賴
+          Gateway 自身持有的 local state;底部 AuditStrip 仍以既有游標輪詢獨立顯示新事件。 */}
+      <h3 style={{ marginTop: 32 }}>越界攔截判定(幕 4)· Cedar 決策面板</h3>
+      {!lastDisclose ? (
+        <p style={{ color: '#666' }}>尚無查驗請求——請至「Bruck Agent」分頁按「發出查驗請求」或「加碼索取 machine_energy」。</p>
+      ) : (
+        <>
+          <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: '8px 12px', maxWidth: 640, background: '#f7f9ff', fontSize: 13 }}>
+            請求收件匣 ▸ #req-{lastDisclose.auditSeq ?? '?'} from Bruck-Agent · claims×{lastDisclose.requestedClaims.length} · nonce{' '}
+            {lastDisclose.nonce.slice(0, 8)}… · 案{lastDisclose.caseId}
+          </div>
+
+          <div
+            style={{
+              position: 'relative',
+              border: `1px solid ${lastDisclose.decision === 'PERMIT' ? '#0a7a2f' : '#c0392b'}`,
+              borderRadius: 8,
+              padding: 16,
+              marginTop: 10,
+              background: '#fff',
+              maxWidth: 640,
+            }}
+          >
+            <DenyStamp active={lastDisclose.decision !== 'PERMIT'} />
+            <p style={{ margin: 0, fontWeight: 700, fontSize: 16, color: lastDisclose.decision === 'PERMIT' ? '#0a7a2f' : '#c0392b' }}>
+              {lastDisclose.decision === 'PERMIT'
+                ? `PERMIT · 命中 ${lastDisclose.policyId ?? 'P1'}`
+                : `${lastDisclose.decision} ${lastDisclose.policyId ? `· 命中 ${lastDisclose.policyId}` : ''}`}
+            </p>
+            <p style={{ margin: '4px 0 0', fontSize: 13 }}>
+              理由碼:<code>{lastDisclose.reasonCode}</code>
+              {REASON_LABELS_P2[lastDisclose.reasonCode] && <span style={{ color: '#666' }}> — {REASON_LABELS_P2[lastDisclose.reasonCode]}</span>}
+            </p>
+
+            {policies && (
+              <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+                <PolicyBlock
+                  id="P1"
+                  text={policies.p1}
+                  highlighted={lastDisclose.policyId === 'P1' || lastDisclose.decision === 'PERMIT'}
+                />
+                <PolicyBlock id="P2" text={policies.p2} highlighted={lastDisclose.policyId === 'P2'} />
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </section>
+  );
+}
+
+function PolicyBlock({ id, text, highlighted }: { id: string; text: string; highlighted: boolean }) {
+  return (
+    <div
+      style={{
+        flex: '1 1 260px',
+        border: `2px solid ${highlighted ? (id === 'P2' ? '#c0392b' : '#0a7a2f') : '#ccc'}`,
+        borderRadius: 6,
+        padding: 8,
+        background: highlighted ? (id === 'P2' ? '#fff5f5' : '#f2fbf4') : '#fafafa',
+        opacity: highlighted ? 1 : 0.55,
+      }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+        policies/{id.toLowerCase()}.cedar {highlighted && '◀ 命中'}
+      </div>
+      <pre style={{ margin: 0, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{text}</pre>
+    </div>
   );
 }
 

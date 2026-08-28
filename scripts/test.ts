@@ -17,14 +17,25 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { jwtVerify, decodeProtectedHeader } from 'jose';
-import { splitSdJwt, decodeJwt } from '@sd-jwt/core';
+import { SignJWT, jwtVerify, decodeProtectedHeader, decodeJwt as decodeJoseJwt } from 'jose';
+import { splitSdJwt, decodeJwt, type DisclosureFrame } from '@sd-jwt/core';
+import type { SdJwtVcPayload } from '@sd-jwt/sd-jwt-vc';
 import { buildServer } from '../server/index';
-import { ROOT, openDb } from '../server/db';
-import { loadSandboxKey, publicKeyFromQb64 } from '../server/keys';
+import { ROOT, openDb, VLEI_PUBLIC_STATE_DIR } from '../server/db';
+import { loadSandboxKey, loadWorkloadKey, publicKeyFromQb64 } from '../server/keys';
 import { STATUS_MEDIA_TYPE, STATUS_LIST_SIZE, statusListUri } from '../server/statuslist';
 import { verifyCompactSdJwt } from '../server/creds/verifier';
 import { insertCredentialIfAbsent } from '../server/creds/store';
+import { tamperPayloadByte } from '../server/creds/tamper';
+import { issuePcfAggregate, PCF_AGGREGATE_VCT } from '../server/creds/pcfAggregate';
+import { buildIssuerInstance } from '../server/creds/issuer';
+import { presentSelectedDisclosures, presentRawDisclosures, NeverDisclosableClaimError } from '../server/creds/presenter';
+import { verifyPresentation } from '../server/creds/verifyPresentation';
+import { processDiscloseRequest } from '../server/creds/discloseGateway';
+import { resolvePublicKeyFromManifest } from '../server/manifest';
+import { readStatusListToken, checkStatusBit } from '../server/statuslist';
+import { M2_ALLOWED_CLAIMS, NEVER_DISCLOSABLE_CLAIMS, isSelectableDisclosure } from '../server/policy/claims';
+import { PUBLIC_VLEI_STATE_FILE } from '../server/keys';
 import { CODES } from '../shared/codes';
 import {
   PCF_UPSTREAM_PUBLIC_FIELDS,
@@ -33,6 +44,35 @@ import {
   PCF_UPSTREAM_CONFIDENTIAL_FIELDS,
   type Manifest,
 } from '../shared/types';
+
+const TSX_BIN = path.join(ROOT, 'node_modules', '.bin', 'tsx');
+
+/**
+ * 幕 3/4 測試小工具:以 workload 鑰簽 disclose request_jws(architecture:136;impl-spec §2)。
+ * iatSec 可覆寫(M1 新鮮度窗測項用「相對於現在的過期時間」,不寫死日期,不會在未來某天翻紅)。
+ */
+async function signDiscloseRequest(
+  key: ReturnType<typeof loadWorkloadKey>,
+  mandateJti: string,
+  caseId: 'A' | 'B',
+  requestedClaims: string[],
+  nonce: string,
+  iatSec: number = Math.floor(Date.now() / 1000),
+): Promise<string> {
+  return new SignJWT({
+    mandate_id: mandateJti,
+    case_id: caseId,
+    requested_claims: requestedClaims,
+    request_nonce: nonce,
+    iat: iatSec,
+  })
+    .setProtectedHeader({ alg: 'EdDSA', kid: key.kid })
+    .sign(key.privateKey);
+}
+
+function randomNonce(): string {
+  return crypto.randomBytes(12).toString('base64url');
+}
 
 let passed = 0;
 let failed = 0;
@@ -610,7 +650,809 @@ async function main() {
     }
   }
 
-  // 11) 一致性守門
+  // 12) 幕 3 mandate 簽發(POST /api/mandates;架構決策 §4)——M2 為主線,M1 為背景亦須可簽。
+  let m2Summary!: { jti: string; allowed_claims: string[]; valid_until: string; delegate_kid: string; status: { idx: number; uri: string } };
+  let m2MandateJwt!: string;
+  {
+    const app12 = buildServer();
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const bruckWorkload = loadWorkloadKey('bruck-workload');
+
+      const m2Res = await app12.inject({ method: 'POST', url: '/api/mandates', payload: { mandate: 'M2' } });
+      check('POST /api/mandates(M2)回 200', m2Res.statusCode === 200, `status=${m2Res.statusCode} body=${m2Res.body.slice(0, 200)}`);
+      const m2Body = m2Res.json() as { mandate_jwt: string; reused: boolean; summary: typeof m2Summary };
+      m2Summary = m2Body.summary;
+      m2MandateJwt = m2Body.mandate_jwt;
+
+      check('M2 delegate_kid == bruck-workload 公鑰 kid', m2Summary.delegate_kid === bruckWorkload.kid, `got=${m2Summary.delegate_kid}`);
+      check('M2 mandates Token Status List idx == 1', m2Summary.status.idx === 1, `got=${m2Summary.status.idx}`);
+      check(
+        'M2 簽發者 kid 為 Bruck 永續長 ECR AID',
+        decodeProtectedHeader(m2MandateJwt).kid === manifest.bruck_cso.aid,
+        `kid=${decodeProtectedHeader(m2MandateJwt).kid} expected=${manifest.bruck_cso.aid}`,
+      );
+      check(
+        '遺留(b)鎖:M2 allowed_claims 不含 precursor_contribution_tco2e_per_t',
+        !m2Summary.allowed_claims.includes('precursor_contribution_tco2e_per_t'),
+        JSON.stringify(m2Summary.allowed_claims),
+      );
+      check(
+        `M2 allowed_claims 恰為 pcf_aggregate 可揭露欄位扣除永不揭露分項之集合(${M2_ALLOWED_CLAIMS.length} 欄)`,
+        m2Summary.allowed_claims.length === M2_ALLOWED_CLAIMS.length && M2_ALLOWED_CLAIMS.every((c) => m2Summary.allowed_claims.includes(c)),
+        JSON.stringify(m2Summary.allowed_claims),
+      );
+      // H2 靜態鎖:三個聚合分項一律不得出現在 M2.allowed_claims(任兩項相加減即可還原第三項與上游合計)。
+      check(
+        'H2 靜態鎖:M2 allowed_claims 不含任何聚合分項(precursor_contribution / self_direct / self_indirect)',
+        NEVER_DISCLOSABLE_CLAIMS.every((c) => !m2Summary.allowed_claims.includes(c)),
+        JSON.stringify(m2Summary.allowed_claims),
+      );
+      // L2 鎖:mandate 效期不得寫死到近期日期——距今至少 90 天,否則 demo 會在某天全面 MANDATE_EXPIRED。
+      const m2Exp = (decodeJoseJwt(m2MandateJwt) as { exp?: number }).exp ?? 0;
+      check(
+        'L2:M2 mandate exp 距今 ≥ 90 天(效期不寫死近期日期,demo 不會某天全面 MANDATE_EXPIRED)',
+        m2Exp - Math.floor(Date.now() / 1000) >= 90 * 24 * 60 * 60,
+        `exp=${new Date(m2Exp * 1000).toISOString().slice(0, 10)} valid_until=${m2Summary.valid_until}`,
+      );
+
+      // 冪等:重複呼叫回同一 token。
+      const m2AgainRes = await app12.inject({ method: 'POST', url: '/api/mandates', payload: { mandate: 'M2' } });
+      const m2Again = m2AgainRes.json() as { mandate_jwt: string; reused: boolean };
+      check(
+        'M2 冪等:重複呼叫 reused=true 且 token 不變',
+        m2AgainRes.statusCode === 200 && m2Again.reused === true && m2Again.mandate_jwt === m2MandateJwt,
+        `reused=${m2Again.reused}`,
+      );
+
+      // 併發:兩個 POST /api/mandates(M1)只落一列、回同一 token(與上面 M2 冪等測項互不干擾)。
+      // 先清空 M1(若前一輪 make test 未 demo-reset 就重跑,M1 早已存在會讓兩邊都是 reused=true,
+      // 測項本身要驗的是「兩個同時到達的請求誰先落庫」,而非「M1 是否已存在」)。
+      const cleanM1Db = openDb();
+      cleanM1Db.prepare('DELETE FROM mandates WHERE id = ?').run('M1');
+      cleanM1Db.close();
+      const [m1Res1, m1Res2] = await Promise.all([
+        app12.inject({ method: 'POST', url: '/api/mandates', payload: { mandate: 'M1' } }),
+        app12.inject({ method: 'POST', url: '/api/mandates', payload: { mandate: 'M1' } }),
+      ]);
+      type MandateApiBody = { mandate_jwt: string; reused: boolean; summary: { delegate_kid: string; status: { idx: number } } };
+      const m1Body1 = m1Res1.json() as MandateApiBody;
+      const m1Body2 = m1Res2.json() as MandateApiBody;
+      check(
+        '併發兩個 POST /api/mandates(M1)皆回 200 且拿到同一 token',
+        m1Res1.statusCode === 200 && m1Res2.statusCode === 200 && m1Body1.mandate_jwt === m1Body2.mandate_jwt,
+        `status1=${m1Res1.statusCode} status2=${m1Res2.statusCode}`,
+      );
+      check(
+        '併發兩個 POST /api/mandates(M1)之一 reused=true',
+        m1Body1.reused !== m1Body2.reused && (m1Body1.reused === true || m1Body2.reused === true),
+        `reused1=${m1Body1.reused} reused2=${m1Body2.reused}`,
+      );
+      check(
+        'M1 delegate_kid == hunggang-workload 公鑰 kid、mandates Token Status List idx == 0',
+        m1Body1.summary.delegate_kid === loadWorkloadKey('hunggang-workload').kid && m1Body1.summary.status.idx === 0,
+        JSON.stringify(m1Body1.summary),
+      );
+      const mandateDb = openDb();
+      const m1Rows = mandateDb.prepare('SELECT id FROM mandates WHERE id = ?').all('M1') as { id: string }[];
+      mandateDb.close();
+      check('mandates 表 M1 該案只有一列', m1Rows.length === 1, `rows=${m1Rows.length}`);
+    } finally {
+      await app12.close();
+    }
+  }
+
+  // 13) 幕 3 disclose PERMIT(POST /api/disclose)——六欄 presentation 只含 allowed disclosures。
+  let permitRequestJws!: string;
+  let permitPresentation!: string;
+  {
+    const app13 = buildServer();
+    try {
+      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const permitNonce = randomNonce();
+      permitRequestJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, permitNonce);
+
+      const mandateDbBefore = openDb();
+      const queriesUsedBefore = (mandateDbBefore.prepare('SELECT queries_used FROM mandates WHERE id = ?').get('M2') as { queries_used: number })
+        .queries_used;
+      mandateDbBefore.close();
+      const auditBeforeRes = await app13.inject({ method: 'GET', url: '/api/audit?after=0' });
+      const auditCountBefore = (auditBeforeRes.json() as unknown[]).length;
+
+      const discloseRes = await app13.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: permitRequestJws } });
+      check(
+        'POST /api/disclose(M2,案 A,allowed_claims 全量)回 200 PERMIT',
+        discloseRes.statusCode === 200,
+        `status=${discloseRes.statusCode} body=${discloseRes.body.slice(0, 300)}`,
+      );
+      const discloseBody = discloseRes.json() as { decision: string; policy_id: string; presentation: string; mandate_id: string; case_id: string };
+      check(
+        '回應 decision=PERMIT、policy_id=P1',
+        discloseBody.decision === 'PERMIT' && discloseBody.policy_id === 'P1',
+        JSON.stringify(discloseBody).slice(0, 200),
+      );
+      permitPresentation = discloseBody.presentation;
+
+      // 逐欄核對「在/不在」:presentation 只含 M2.allowed_claims 六欄(以 verifyCompactSdJwt 解出已揭露 payload)。
+      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const presVerify = await verifyCompactSdJwt(permitPresentation, resolvePublicKeyFromManifest(manifest));
+      check('presentation 可用鴻鋼公鑰驗章通過', presVerify.ok === true, JSON.stringify({ ok: presVerify.ok, error: presVerify.error }));
+      const presPayload = (presVerify.payload ?? {}) as Record<string, unknown>;
+      const allInAllowed = m2Summary.allowed_claims.every((claim) => claim in presPayload);
+      check(`presentation 含全部允許欄位(${m2Summary.allowed_claims.length} 欄逐一核對「在」)`, allInAllowed, JSON.stringify(Object.keys(presPayload)));
+      check(
+        '遺留(b)鎖:presentation 不含 precursor_contribution_tco2e_per_t(逐欄核對「不在」)',
+        !('precursor_contribution_tco2e_per_t' in presPayload),
+        JSON.stringify(Object.keys(presPayload)),
+      );
+
+      const auditAfterRes = await app13.inject({ method: 'GET', url: '/api/audit?after=0' });
+      const auditCountAfter = (auditAfterRes.json() as unknown[]).length;
+      check('audit 鏈多一筆(PERMIT 入鏈)', auditCountAfter === auditCountBefore + 1, `before=${auditCountBefore} after=${auditCountAfter}`);
+
+      const mandateDbAfter = openDb();
+      const queriesUsedAfter = (mandateDbAfter.prepare('SELECT queries_used FROM mandates WHERE id = ?').get('M2') as { queries_used: number })
+        .queries_used;
+      mandateDbAfter.close();
+      check('query_cap 扣一次(mandates.queries_used +1)', queriesUsedAfter === queriesUsedBefore + 1, `before=${queriesUsedBefore} after=${queriesUsedAfter}`);
+    } finally {
+      await app13.close();
+    }
+  }
+
+  // 14) 幕 4 越界攔截 DENY(加碼索取 machine_energy)——Cedar P2 forbid,零欄位外洩。
+  {
+    const app14 = buildServer();
+    try {
+      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const overRequestClaims = [...m2Summary.allowed_claims, 'machine_energy'];
+      const requestJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', overRequestClaims, randomNonce());
+
+      const auditBeforeRes = await app14.inject({ method: 'GET', url: '/api/audit?after=0' });
+      const auditCountBefore = (auditBeforeRes.json() as unknown[]).length;
+
+      const res = await app14.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: requestJws } });
+      check('幕 4:加碼索取 machine_energy → 403', res.statusCode === 403, `status=${res.statusCode} body=${res.body}`);
+      const body = res.json() as Record<string, unknown>;
+      check(
+        '理由碼 POLICY_P2_CONFIDENTIAL、policy_id=P2',
+        body.reason_code === CODES.POLICY_P2_CONFIDENTIAL && body.policy_id === 'P2',
+        JSON.stringify(body),
+      );
+      check(
+        '零欄位外洩:回應無 presentation 欄位,亦不含任何 pcf_aggregate 欄位值',
+        !('presentation' in body) && !('carbon_total_tco2e_per_t' in body),
+        JSON.stringify(body),
+      );
+
+      const auditAfterRes = await app14.inject({ method: 'GET', url: '/api/audit?after=0' });
+      const auditCountAfter = (auditAfterRes.json() as unknown[]).length;
+      check('audit 鏈多一筆(DENY 入鏈)', auditCountAfter === auditCountBefore + 1, `before=${auditCountBefore} after=${auditCountAfter}`);
+    } finally {
+      await app14.close();
+    }
+  }
+
+  // 15) 重放:同 (mandate_id, request_nonce) 二次 → 409 REPLAY_DETECTED;audit 入鏈。
+  {
+    const app15 = buildServer();
+    try {
+      const auditBeforeRes = await app15.inject({ method: 'GET', url: '/api/audit?after=0' });
+      const auditCountBefore = (auditBeforeRes.json() as unknown[]).length;
+
+      const res = await app15.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: permitRequestJws } });
+      check('重放同一 request_jws(與幕 3 PERMIT 同 nonce)→ 409', res.statusCode === 409, `status=${res.statusCode} body=${res.body}`);
+      const body = res.json() as Record<string, unknown>;
+      check('理由碼 REPLAY_DETECTED', body.reason_code === CODES.REPLAY_DETECTED, JSON.stringify(body));
+
+      const auditAfterRes = await app15.inject({ method: 'GET', url: '/api/audit?after=0' });
+      const auditCountAfter = (auditAfterRes.json() as unknown[]).length;
+      check('audit 鏈多一筆(REPLAY_DETECTED 入鏈)', auditCountAfter === auditCountBefore + 1, `before=${auditCountBefore} after=${auditCountAfter}`);
+    } finally {
+      await app15.close();
+    }
+  }
+
+  // 16) mandate 負路徑:壞簽章 → MANDATE_SIG_INVALID;非 delegate 鑰簽 request → DELEGATE_KEY_MISMATCH。
+  {
+    const app16 = buildServer();
+    try {
+      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const hunggangWorkload = loadWorkloadKey('hunggang-workload');
+
+      // (a) 壞簽章:直接竄改 DB 內 M2 mandate 的 token(模擬 mandates 表遭竄改),測完立即復原。
+      const tamperDb = openDb();
+      const originalToken = (tamperDb.prepare('SELECT token FROM mandates WHERE id = ?').get('M2') as { token: string }).token;
+      const tamperedToken = tamperPayloadByte(originalToken);
+      tamperDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(tamperedToken, 'M2');
+      tamperDb.close();
+
+      const badSigRequestJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const badSigRes = await app16.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: badSigRequestJws } });
+      check(
+        'mandate 遭竄改(壞簽章)→ 403 MANDATE_SIG_INVALID',
+        badSigRes.statusCode === 403 && (badSigRes.json() as { reason_code?: string }).reason_code === CODES.MANDATE_SIG_INVALID,
+        `status=${badSigRes.statusCode} body=${badSigRes.body}`,
+      );
+
+      const restoreDb = openDb();
+      restoreDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(originalToken, 'M2');
+      restoreDb.close();
+
+      // (b) 非 delegate 鑰簽 request → DELEGATE_KEY_MISMATCH(以 hunggang-workload 鑰簽,冒充 bruck-workload)。
+      const wrongDelegateJws = await signDiscloseRequest(hunggangWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const wrongDelegateRes = await app16.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: wrongDelegateJws } });
+      check(
+        '非 delegate 鑰簽 request(hunggang-workload 冒簽)→ 403 DELEGATE_KEY_MISMATCH',
+        wrongDelegateRes.statusCode === 403 && (wrongDelegateRes.json() as { reason_code?: string }).reason_code === CODES.DELEGATE_KEY_MISMATCH,
+        `status=${wrongDelegateRes.statusCode} body=${wrongDelegateRes.body}`,
+      );
+
+      // 復原後確認 M2 仍可正常運作(避免復原邏輯本身有誤,靜默留下壞資料)。
+      const sanityJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const sanityRes = await app16.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: sanityJws } });
+      check(
+        '復原 mandate token 後,正常簽章的 disclose request 仍可 PERMIT(確認復原成功、未留壞資料)',
+        sanityRes.statusCode === 200,
+        `status=${sanityRes.statusCode} body=${sanityRes.body.slice(0, 200)}`,
+      );
+    } finally {
+      await app16.close();
+    }
+  }
+
+  // 17) Bruck 端驗證(server/creds/verifyPresentation.ts,幕 3 DoD)。
+  {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+
+    // (a) 合法 presentation 全綠。
+    const goodResult = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: m2MandateJwt, manifest });
+    check('Bruck 端驗證:合法 presentation 全部檢查項通過', goodResult.ok && goodResult.checks.every((c) => c.ok), JSON.stringify(goodResult.checks));
+
+    // (b) 竄改(tamper)presentation → 簽章驗證失敗(重用既有竄改工具,經 /api/creds/tamper-demo)。
+    const app17 = buildServer();
+    let tamperedPresentation = '';
+    try {
+      const tamperRes = await app17.inject({ method: 'POST', url: '/api/creds/tamper-demo', payload: { sd_jwt: permitPresentation } });
+      tamperedPresentation = (tamperRes.json() as { sd_jwt: string }).sd_jwt;
+    } finally {
+      await app17.close();
+    }
+    const tamperedResult = await verifyPresentation({ presentationSdJwt: tamperedPresentation, mandateJwt: m2MandateJwt, manifest });
+    check(
+      'Bruck 端驗證:竄改後 presentation 於 SD-JWT 簽章檢查項失敗',
+      tamperedResult.ok === false && tamperedResult.checks[0]?.ok === false,
+      JSON.stringify(tamperedResult.checks.slice(0, 1)),
+    );
+
+    // (c) allowed_claims 外多挑一個 disclosure → CLAIM_NOT_IN_MANDATE(幕 3 DoD:雙向約束)。
+    const aggDb = openDb();
+    const aggRow = aggDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('pcf_aggregate-A') as { sd_jwt: string } | undefined;
+    aggDb.close();
+    if (!aggRow) {
+      check('雙向約束測項前置:credentials 表存在 pcf_aggregate-A', false, '找不到 pcf_aggregate-A(前面幕 2 測項應已簽發)');
+    } else {
+      const overBroadFrame: Record<string, boolean> = {};
+      for (const claim of m2Summary.allowed_claims) if (isSelectableDisclosure(claim)) overBroadFrame[claim] = true;
+      overBroadFrame.precursor_contribution_tco2e_per_t = true; // 故意多挑一個不在 allowed_claims 內的 disclosure
+      // 以低階入口 presentRawDisclosures 構造(繞過 L4 的 presenter deny-list),模擬「閘道被繞過/
+      // 惡意 presenter」——正是要證明即使前面兩道防線失效,Bruck 端雙向約束仍會攔下。
+      const overBroadPresentation = await presentRawDisclosures(aggRow.sd_jwt, overBroadFrame as never);
+      const overBroadResult = await verifyPresentation({ presentationSdJwt: overBroadPresentation, mandateJwt: m2MandateJwt, manifest });
+      const boundaryCheck = overBroadResult.checks.find((c) => c.name.includes('雙向約束'));
+      check(
+        '幕 3 DoD(雙向約束):allowed_claims 外多挑一個 disclosure → CLAIM_NOT_IN_MANDATE',
+        overBroadResult.ok === false && boundaryCheck?.ok === false && boundaryCheck?.reasonCode === CODES.CLAIM_NOT_IN_MANDATE,
+        JSON.stringify(boundaryCheck),
+      );
+    }
+
+    // (d) 遺留(a)鎖:錯誤角色簽發(vct 宣稱 pcf_aggregate,實際由 Thép Việt LE 鑰簽發,非鴻鋼)→ 拒絕。
+    const thepvietKey = loadSandboxKey('thepviet');
+    const nowSec = Math.floor(Date.now() / 1000);
+    const forgedPayload = {
+      vct: PCF_AGGREGATE_VCT,
+      iss: thepvietKey.kid,
+      iat: nowSec,
+      nbf: nowSec,
+      exp: nowSec + 3600,
+      status: { status_list: { idx: 2, uri: statusListUri('credentials') } },
+      cn_code: '7318.15',
+      precursor_ref: { id: 'pcf_upstream-A', hash: '0'.repeat(64) },
+      carbon_total_tco2e_per_t: 1.5125,
+    };
+    const forgedFrame = { carbon_total_tco2e_per_t: true } as unknown as DisclosureFrame<SdJwtVcPayload>;
+    const forgedInstance = buildIssuerInstance(thepvietKey);
+    const forgedSdJwt = await forgedInstance.issue(forgedPayload as unknown as SdJwtVcPayload, forgedFrame, { header: { kid: thepvietKey.kid } });
+    const forgedResult = await verifyPresentation({ presentationSdJwt: forgedSdJwt, mandateJwt: m2MandateJwt, manifest });
+    const vctCheck = forgedResult.checks.find((c) => c.name.includes('vct'));
+    check(
+      '遺留(a)鎖:pcf_aggregate 由 Thép Việt LE 鑰(非鴻鋼)簽發 → vct↔簽發者 AID 綁定檢查失敗(VCT_ISSUER_UNAUTHORIZED)',
+      forgedResult.ok === false && vctCheck?.ok === false && vctCheck?.reasonCode === CODES.VCT_ISSUER_UNAUTHORIZED,
+      JSON.stringify(vctCheck),
+    );
+  }
+
+  // 18) scripts/verify-offline.ts:實際 spawn 執行(不起 server)→ 幕 3 DoD「斷網狀態驗證仍成功」。
+  {
+    const presFile = path.join(ROOT, 'data', '.tmp-verify-offline-presentation.txt');
+    const mandateFile = path.join(ROOT, 'data', '.tmp-verify-offline-mandate.txt');
+    fs.writeFileSync(presFile, permitPresentation);
+    fs.writeFileSync(mandateFile, m2MandateJwt);
+    try {
+      const r = spawnSync(
+        TSX_BIN,
+        ['scripts/verify-offline.ts', '--presentation', path.relative(ROOT, presFile), '--mandate', path.relative(ROOT, mandateFile)],
+        { cwd: ROOT, encoding: 'utf-8' },
+      );
+      check(
+        'scripts/verify-offline.ts 實際 spawn 執行成功(exit 0,不起 server、零網路呼叫)',
+        r.status === 0 && r.stdout.includes('全數通過'),
+        `status=${r.status} stdout=${r.stdout.slice(-300)} stderr=${r.stderr.slice(0, 300)}`,
+      );
+    } finally {
+      fs.rmSync(presFile, { force: true });
+      fs.rmSync(mandateFile, { force: true });
+    }
+  }
+
+  // 19) scripts/verify-chain.ts:正常鏈通過;手動竄改一列 payload 後非零退出;
+  //     DENY/REPLAY_DETECTED 事件在鏈上驗得過(幕 4 DoD:連拒絕都留痕)。
+  {
+    const okRun = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+    check('scripts/verify-chain.ts 正常鏈驗證通過(exit 0)', okRun.status === 0, `status=${okRun.status} stdout=${okRun.stdout.slice(-300)}`);
+    check(
+      '幕 4 DoD:DENY/REPLAY_DETECTED 事件在鏈上驗得過(連拒絕都留痕)',
+      /拒絕\/重放類事件.*共 [1-9]\d* 筆/.test(okRun.stdout),
+      okRun.stdout.slice(-300),
+    );
+
+    const tamperedDbPath = path.join(ROOT, 'db', '.tmp-verify-chain-tampered.sqlite');
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (fs.existsSync(tamperedDbPath + suffix)) fs.rmSync(tamperedDbPath + suffix);
+    }
+    fs.copyFileSync(path.join(ROOT, 'db', 'demo.sqlite'), tamperedDbPath);
+    try {
+      const tamperConn = openDb(tamperedDbPath);
+      tamperConn.prepare('UPDATE audit_chain SET payload_json = ? WHERE seq = 1').run(JSON.stringify({ tampered: true }));
+      tamperConn.close();
+
+      const tamperedRun = spawnSync(TSX_BIN, ['scripts/verify-chain.ts', '--db', tamperedDbPath], { cwd: ROOT, encoding: 'utf-8' });
+      check(
+        '手動竄改一列 payload 後 scripts/verify-chain.ts 非零退出 + AUDIT_CHAIN_TAMPERED',
+        tamperedRun.status !== 0 && tamperedRun.stdout.includes(CODES.AUDIT_CHAIN_TAMPERED),
+        `status=${tamperedRun.status} stdout=${tamperedRun.stdout.slice(-300)}`,
+      );
+    } finally {
+      for (const suffix of ['', '-wal', '-shm']) {
+        if (fs.existsSync(tamperedDbPath + suffix)) fs.rmSync(tamperedDbPath + suffix);
+      }
+    }
+  }
+
+  // 20) 遺留(c)(d)鎖:直接併發呼叫 issuePcfAggregate(函式層,非 HTTP)→ credentials 表該案一列,
+  //     兩邊拿到同一 token(HTTP 層 Promise.all 測項無法可靠重現交錯執行,見既有 (a0) 區塊註解)。
+  {
+    const raceDb = openDb();
+    raceDb.prepare('DELETE FROM credentials WHERE id IN (?, ?)').run('pcf_upstream-A', 'pcf_aggregate-A');
+    raceDb.close();
+
+    const dbForCall1 = openDb();
+    const dbForCall2 = openDb();
+    let issuance1: Awaited<ReturnType<typeof issuePcfAggregate>>;
+    let issuance2: Awaited<ReturnType<typeof issuePcfAggregate>>;
+    try {
+      [issuance1, issuance2] = await Promise.all([issuePcfAggregate(dbForCall1, 'A'), issuePcfAggregate(dbForCall2, 'A')]);
+    } finally {
+      dbForCall1.close();
+      dbForCall2.close();
+    }
+    check(
+      '遺留(c)(d):併發直接呼叫 issuePcfAggregate(函式層,非 HTTP)兩邊拿到同一 sd_jwt(落庫勝者)',
+      issuance1.sdJwt === issuance2.sdJwt && issuance1.sdJwt.length > 0,
+      `sd_jwt1=${issuance1.sdJwt.slice(0, 24)}… sd_jwt2=${issuance2.sdJwt.slice(0, 24)}…`,
+    );
+
+    const checkDb = openDb();
+    const rows = checkDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_aggregate-A') as { sd_jwt: string }[];
+    checkDb.close();
+    check(
+      '遺留(c)(d):credentials 表 pcf_aggregate-A 該案只有一列,且與函式回傳之落庫勝者一致',
+      rows.length === 1 && rows[0].sd_jwt === issuance1.sdJwt,
+      `rows=${rows.length}`,
+    );
+  }
+
+  // 21) Phase 2 前端 demo 輔助 route(server/routes/demo.ts、server/routes/policies.ts;
+  //     phase2-frontend-spec.md「workload 簽章取得(定案)」+ Tab2 §2 政策原文小補充)。
+  {
+    const app21 = buildServer();
+    try {
+      // (a) GET /api/policies:唯讀回傳 policies/p1.cedar、p2.cedar 原文,與檔案內容逐字相同。
+      const policiesRes = await app21.inject({ method: 'GET', url: '/api/policies' });
+      const policiesBody = policiesRes.json() as { p1?: string; p2?: string };
+      const p1Text = fs.readFileSync(path.join(ROOT, 'policies', 'p1.cedar'), 'utf-8');
+      const p2Text = fs.readFileSync(path.join(ROOT, 'policies', 'p2.cedar'), 'utf-8');
+      check(
+        'GET /api/policies 回 200 且 p1/p2 內容與 policies/*.cedar 逐字相同',
+        policiesRes.statusCode === 200 && policiesBody.p1 === p1Text && policiesBody.p2 === p2Text,
+        `status=${policiesRes.statusCode}`,
+      );
+
+      // (b) POST /api/demo/sign-disclose-request:缺欄位/打錯字 → 400(不得靜默塌成合法值)。
+      const badBodies: Array<Record<string, unknown>> = [
+        {},
+        { mandate_id: m2Summary.jti, case_id: 'X', requested_claims: ['cn_code'] },
+        { mandate_id: m2Summary.jti, case_id: 'A', requested_claims: [] },
+      ];
+      for (const payload of badBodies) {
+        const r = await app21.inject({ method: 'POST', url: '/api/demo/sign-disclose-request', payload });
+        check(`demo 輔助路由缺欄位/打錯字(${JSON.stringify(payload)})→ 400`, r.statusCode === 400, `status=${r.statusCode} body=${r.body}`);
+      }
+
+      // (c) 合法呼叫 → 200,request_jws header.kid == bruck-workload kid,payload 欄位與請求一致。
+      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const demoReqClaims = m2Summary.allowed_claims;
+      const signRes = await app21.inject({
+        method: 'POST',
+        url: '/api/demo/sign-disclose-request',
+        payload: { mandate_id: m2Summary.jti, case_id: 'A', requested_claims: demoReqClaims },
+      });
+      check(
+        'POST /api/demo/sign-disclose-request 回 200',
+        signRes.statusCode === 200,
+        `status=${signRes.statusCode} body=${signRes.body.slice(0, 200)}`,
+      );
+      const signBody = signRes.json() as { request_jws: string; request_nonce: string };
+      check(
+        'request_jws header.kid == bruck-workload 公鑰 kid',
+        decodeProtectedHeader(signBody.request_jws).kid === bruckWorkload.kid,
+        `kid=${decodeProtectedHeader(signBody.request_jws).kid}`,
+      );
+      const signedPayload = (decodeJwt(signBody.request_jws) as unknown as { payload: Record<string, unknown> }).payload;
+      check(
+        'request_jws payload 欄位與請求一致(mandate_id/case_id/requested_claims/request_nonce)',
+        signedPayload.mandate_id === m2Summary.jti &&
+          signedPayload.case_id === 'A' &&
+          JSON.stringify(signedPayload.requested_claims) === JSON.stringify(demoReqClaims) &&
+          signedPayload.request_nonce === signBody.request_nonce,
+        JSON.stringify(signedPayload),
+      );
+
+      // (d) demo 輔助路由簽出的 request_jws 送進 /api/disclose 仍走完整驗證管線 → PERMIT(未繞過任何驗證)。
+      const discloseViaDemoRes = await app21.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: signBody.request_jws } });
+      check(
+        'demo 輔助路由簽出的 request_jws 送進 /api/disclose 仍走完整驗證管線,回 200 PERMIT(未繞過任何驗證)',
+        discloseViaDemoRes.statusCode === 200 && (discloseViaDemoRes.json() as { decision?: string }).decision === 'PERMIT',
+        `status=${discloseViaDemoRes.statusCode} body=${discloseViaDemoRes.body.slice(0, 200)}`,
+      );
+    } finally {
+      await app21.close();
+    }
+  }
+
+  // 23) Phase 2 總驗收缺陷修復回歸鎖(C1 / H1 / H2 / M1 / M2 / L3 / L4 / H3)。
+  //     每一項都對應一個曾以 PoC 重現的真缺陷,退回舊寫法必翻紅。
+  {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+    const seedData = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8'));
+    const bruckWorkload = loadWorkloadKey('bruck-workload');
+    const app23 = buildServer();
+
+    try {
+      // ---------- C1:vct ↔ 簽發者 AID 綁定必須以「實際驗章鑰」為準 ----------
+      // (a) 不誠實偽造:攻擊者用 Thép Việt LE 鑰**實際簽章**(header.kid = Thép Việt AID),
+      //     payload.iss 卻填鴻鋼 LE AID。舊版綁定檢查只比對 payload.iss、取鑰卻走 header.kid,
+      //     兩者從不互相校驗 → 偽造的 carbon_total 會被判 valid=true(PoC 已證實)。
+      const attackerKey = loadSandboxKey('thepviet');
+      const c1Now = Math.floor(Date.now() / 1000);
+      const forgedClaims = {
+        vct: PCF_AGGREGATE_VCT,
+        iss: manifest.hunggang.aid, // 宣稱鴻鋼簽的
+        iat: c1Now,
+        nbf: c1Now,
+        exp: c1Now + 3600,
+        status: { status_list: { idx: 2, uri: statusListUri('credentials') } },
+        cn_code: '7318.15',
+        precursor_ref: { id: 'pcf_upstream-A', hash: '0'.repeat(64) },
+        carbon_total_tco2e_per_t: 0.0001, // 偽造的超低碳排
+        carbon_price_paid_origin: '(偽造)',
+      };
+      const forgedFrame23 = {
+        _sd: ['carbon_total_tco2e_per_t', 'carbon_price_paid_origin'],
+      } as unknown as DisclosureFrame<SdJwtVcPayload>;
+      const dishonestSdJwt = await buildIssuerInstance(attackerKey).issue(forgedClaims as unknown as SdJwtVcPayload, forgedFrame23, {
+        header: { kid: attackerKey.kid }, // 誠實標示自己的鑰(簽章驗得過),只在 payload 說謊
+      });
+      const dishonestResult = await verifyPresentation({ presentationSdJwt: dishonestSdJwt, mandateJwt: m2MandateJwt, manifest });
+      const dishonestSigCheck = dishonestResult.checks[0];
+      const dishonestVctCheck = dishonestResult.checks.find((c) => c.name.includes('vct'));
+      check(
+        'C1:header.kid(實際簽章者 Thép Việt)≠ payload.iss(宣稱鴻鋼)之偽造 pcf_aggregate → VCT_ISSUER_UNAUTHORIZED',
+        dishonestResult.ok === false && dishonestVctCheck?.ok === false && dishonestVctCheck?.reasonCode === CODES.VCT_ISSUER_UNAUTHORIZED,
+        JSON.stringify(dishonestVctCheck),
+      );
+      check(
+        'C1:該偽造憑證的簽章檢查本身是通過的(證明擋下它的是綁定檢查,不是簽章驗證)',
+        dishonestSigCheck?.ok === true,
+        JSON.stringify(dishonestSigCheck),
+      );
+      check(
+        'C1:偽造的 carbon_total(0.0001)不會被判定為有效資料(整體 valid=false)',
+        dishonestResult.ok === false,
+        JSON.stringify(dishonestResult.checks.map((c) => [c.name, c.ok])),
+      );
+
+      // (b) kid 冒充:header.kid 填鴻鋼 AID、實際仍用 Thép Việt 鑰簽 → 第 1 項簽章驗證即失敗
+      //     (取鑰依 kid,解出鴻鋼公鑰,驗不過攻擊者的簽章)。
+      const kidSpoofSdJwt = await buildIssuerInstance(attackerKey).issue(forgedClaims as unknown as SdJwtVcPayload, forgedFrame23, {
+        header: { kid: manifest.hunggang.aid },
+      });
+      const kidSpoofResult = await verifyPresentation({ presentationSdJwt: kidSpoofSdJwt, mandateJwt: m2MandateJwt, manifest });
+      check(
+        'C1:header.kid 冒充鴻鋼、實際用 Thép Việt 鑰簽 → 簽章檢查失敗(CREDENTIAL_SIG_INVALID)',
+        kidSpoofResult.ok === false && kidSpoofResult.checks[0]?.ok === false && kidSpoofResult.checks[0]?.reasonCode === CODES.CREDENTIAL_SIG_INVALID,
+        JSON.stringify(kidSpoofResult.checks[0]),
+      );
+
+      // ---------- H2:最小揭露不得有算術洩漏 ----------
+      const presVerify23 = await verifyCompactSdJwt(permitPresentation, resolvePublicKeyFromManifest(manifest));
+      const presPayload23 = (presVerify23.payload ?? {}) as Record<string, unknown>;
+      const emissionFieldNames = ['carbon_total_tco2e_per_t', ...NEVER_DISCLOSABLE_CLAIMS];
+      const disclosedEmissionFields = emissionFieldNames.filter((f) => f in presPayload23);
+      check(
+        'H2:PERMIT presentation 內的排放數字欄位至多 1 個(只有聚合值,無法兩兩相減)',
+        disclosedEmissionFields.length <= 1,
+        JSON.stringify(disclosedEmissionFields),
+      );
+      check(
+        'H2:PERMIT presentation 不含任何聚合分項(precursor_contribution / self_direct / self_indirect)',
+        NEVER_DISCLOSABLE_CLAIMS.every((f) => !(f in presPayload23)),
+        JSON.stringify(Object.keys(presPayload23)),
+      );
+
+      // 還原攻擊:對 presentation 內**所有**數值(含巢狀)做任意 ± 組合,都不得等於
+      // precursor_contribution(1.05×1.05=1.1025)或上游合計(0.42+0.63=1.05)。
+      const collectNumbers = (v: unknown, out: number[] = []): number[] => {
+        if (typeof v === 'number' && Number.isFinite(v)) out.push(v);
+        else if (Array.isArray(v)) v.forEach((x) => collectNumbers(x, out));
+        else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach((x) => collectNumbers(x, out));
+        return out;
+      };
+      const disclosedNumbers = collectNumbers(presPayload23);
+      const upstreamTotal = seedData.cases.A.direct + seedData.cases.A.indirect;
+      const precursorContribution = seedData.aggregate_defaults.precursor_input_ratio_t_per_t * upstreamTotal;
+      const reconstructionTargets = [precursorContribution, upstreamTotal];
+      let reconstructed: string | null = null;
+      const combos = 3 ** disclosedNumbers.length;
+      for (let mask = 1; mask < combos && !reconstructed; mask++) {
+        let sum = 0;
+        let used = 0;
+        let m = mask;
+        const terms: string[] = [];
+        for (const n of disclosedNumbers) {
+          const sign = m % 3; // 0=不用 1=加 2=減
+          m = Math.floor(m / 3);
+          if (sign === 1) {
+            sum += n;
+            used++;
+            terms.push(`+${n}`);
+          } else if (sign === 2) {
+            sum -= n;
+            used++;
+            terms.push(`-${n}`);
+          }
+        }
+        if (used === 0) continue;
+        for (const target of reconstructionTargets) {
+          if (Math.abs(sum - target) < 1e-9) reconstructed = `${terms.join('')} = ${target}`;
+        }
+      }
+      check(
+        `H2 還原攻擊:揭露數值(${disclosedNumbers.length} 個)的任意 ± 組合都無法還原 precursor_contribution(${precursorContribution})或上游合計(${upstreamTotal})`,
+        reconstructed === null,
+        `命中組合:${reconstructed}`,
+      );
+
+      // ---------- M2:mandate 必須由預期 ECR 角色簽發 ----------
+      const mandatePayloadOriginal = decodeJoseJwt(m2MandateJwt) as Record<string, unknown>;
+      const cfoKey = loadSandboxKey('hunggang_cfo');
+      // (a) 換角色簽(鴻鋼財務主管 ECR 冒簽 M2):kid/iss 都誠實寫自己 → 必須因「非預期角色」被拒。
+      const wrongRoleMandate = await new SignJWT({ ...mandatePayloadOriginal, iss: cfoKey.kid })
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: cfoKey.kid })
+        .sign(cfoKey.privateKey);
+      // (b) kid 冒充 Bruck 永續長、實際用鴻鋼財務主管鑰簽 → 簽章驗證失敗。
+      const kidSpoofMandate = await new SignJWT({ ...mandatePayloadOriginal })
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: manifest.bruck_cso.aid })
+        .sign(cfoKey.privateKey);
+
+      const mandateDb23 = openDb();
+      const originalM2Token = (mandateDb23.prepare('SELECT token FROM mandates WHERE id = ?').get('M2') as { token: string }).token;
+      mandateDb23.close();
+      for (const [label, badToken] of [
+        ['非預期角色(鴻鋼財務主管 ECR)簽發 M2', wrongRoleMandate],
+        ['kid 冒充 Bruck 永續長、實際用他方鑰簽', kidSpoofMandate],
+      ] as const) {
+        const swapDb = openDb();
+        swapDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(badToken, 'M2');
+        swapDb.close();
+        const jws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+        const res = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: jws } });
+        check(
+          `M2:${label} → 403 MANDATE_SIG_INVALID(mandate iss 綁定預期 ECR 角色)`,
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.MANDATE_SIG_INVALID,
+          `status=${res.statusCode} body=${res.body}`,
+        );
+        const restoreDb = openDb();
+        restoreDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(originalM2Token, 'M2');
+        restoreDb.close();
+      }
+      // Bruck 端(verifyPresentation 第 5 項)同樣不接受非預期角色簽發的 M2。
+      const wrongRoleVerify = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: wrongRoleMandate, manifest });
+      const mandateCheck23 = wrongRoleVerify.checks.find((c) => c.name.includes('mandate 簽章驗證'));
+      check(
+        'M2:Bruck 端驗證亦拒絕非預期角色簽發的 M2 mandate(MANDATE_SIG_INVALID)',
+        wrongRoleVerify.ok === false && mandateCheck23?.ok === false && mandateCheck23?.reasonCode === CODES.MANDATE_SIG_INVALID,
+        JSON.stringify(mandateCheck23),
+      );
+
+      // ---------- M1:request_jws 新鮮度窗 ----------
+      const nowSec23 = Math.floor(Date.now() / 1000);
+      const staleNonce = randomNonce();
+      const staleJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, staleNonce, nowSec23 - 3600);
+      const staleRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: staleJws } });
+      check(
+        'M1:iat 過舊(1 小時前)的 request_jws → 400 DISCLOSE_REQUEST_INVALID(被拒的請求無法長期保存待條件變好再用)',
+        staleRes.statusCode === 400 && (staleRes.json() as { reason_code?: string }).reason_code === CODES.DISCLOSE_REQUEST_INVALID,
+        `status=${staleRes.statusCode} body=${staleRes.body}`,
+      );
+      const staleRetryRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: staleJws } });
+      check(
+        'M1:同一份過期 request_jws 稍後再重放仍是 400(新鮮度窗不因狀態改變而放行)',
+        staleRetryRes.statusCode === 400,
+        `status=${staleRetryRes.statusCode}`,
+      );
+      const futureJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce(), nowSec23 + 3600);
+      const futureRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: futureJws } });
+      check(
+        'M1:iat 超前(1 小時後)的未來票 request_jws → 400 DISCLOSE_REQUEST_INVALID',
+        futureRes.statusCode === 400 && (futureRes.json() as { reason_code?: string }).reason_code === CODES.DISCLOSE_REQUEST_INVALID,
+        `status=${futureRes.statusCode} body=${futureRes.body}`,
+      );
+      const freshJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const freshRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: freshJws } });
+      check(
+        'M1 對照組:新鮮的 request_jws 仍 PERMIT(新鮮度窗沒有把正常路徑一起擋死)',
+        freshRes.statusCode === 200,
+        `status=${freshRes.statusCode} body=${freshRes.body.slice(0, 160)}`,
+      );
+
+      // ---------- L3:Status List Token 必須驗 typ ----------
+      const realStatusToken = readStatusListToken('credentials');
+      const hunggangKey23 = loadSandboxKey('hunggang');
+      const statusIssuerPubKey = publicKeyFromQb64(manifest.hunggang.public_key);
+      const realStatusPayload = decodeJoseJwt(realStatusToken ?? '') as Record<string, unknown>;
+      const typSpoofToken = await new SignJWT(realStatusPayload)
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'JWT', kid: hunggangKey23.kid }) // 同一把鑰、內容合法,只是 typ 不對
+        .sign(hunggangKey23.privateKey);
+      const typSpoofResult = await checkStatusBit(typSpoofToken, 2, statusIssuerPubKey);
+      check(
+        'L3:typ 非 "statuslist+jwt" 的 JWT(同鑰簽、內容相同)→ checkStatusBit 拒絕',
+        typSpoofResult.ok === false && /typ/.test(typSpoofResult.error ?? ''),
+        JSON.stringify(typSpoofResult),
+      );
+      const realStatusResult = await checkStatusBit(realStatusToken ?? '', 2, statusIssuerPubKey);
+      check('L3 對照組:正式 Status List Token(typ 正確)仍通過', realStatusResult.ok === true && realStatusResult.revoked === false, JSON.stringify(realStatusResult));
+
+      // ---------- L4:presenter 端硬 deny-list(縱深防禦)----------
+      const aggDb23 = openDb();
+      const aggSdJwt23 = (aggDb23.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('pcf_aggregate-A') as { sd_jwt: string }).sd_jwt;
+      aggDb23.close();
+      for (const denied of NEVER_DISCLOSABLE_CLAIMS) {
+        let caught: unknown = null;
+        try {
+          await presentSelectedDisclosures(aggSdJwt23, { [denied]: true } as never);
+        } catch (e) {
+          caught = e;
+        }
+        check(
+          `L4:presenter 挑到 ${denied} → 硬拒(NeverDisclosableClaimError,不看 mandate 寫什麼)`,
+          caught instanceof NeverDisclosableClaimError,
+          String(caught),
+        );
+      }
+      const allowedOnlyPresentation = await presentSelectedDisclosures(aggSdJwt23, { carbon_total_tco2e_per_t: true } as never);
+      check('L4 對照組:只挑允許欄位仍可正常出示', typeof allowedOnlyPresentation === 'string' && allowedOnlyPresentation.length > 0);
+
+      // ---------- H3:Bruck 端 vLEI 鏈查驗只讀 data/vlei/(不再讀 .vlei/ 私鑰種子)----------
+      check('H3:vLEI 公開狀態檔存在於 data/vlei/(由 server/keys.ts 於 seed 時匯出)', fs.existsSync(PUBLIC_VLEI_STATE_FILE), PUBLIC_VLEI_STATE_FILE);
+      const publicStateText = fs.existsSync(PUBLIC_VLEI_STATE_FILE) ? fs.readFileSync(PUBLIC_VLEI_STATE_FILE, 'utf-8') : '';
+      const publicStateJson = publicStateText ? (JSON.parse(publicStateText) as { actors: Record<string, Record<string, unknown>> }) : { actors: {} };
+      check(
+        'H3:公開狀態不含任何 actor 私鑰種子(無 seed/next_seed 欄位,且無 CESR "A" 碼 44 字元種子字串)',
+        Object.values(publicStateJson.actors).every((a) => !('seed' in a) && !('next_seed' in a)) && !/"A[A-Za-z0-9_-]{43}"/.test(publicStateText),
+        `actors=${Object.keys(publicStateJson.actors).length}`,
+      );
+      const publicStateVerify = spawnSync(py, [sb, '--dir', VLEI_PUBLIC_STATE_DIR, 'verify', '--said', manifest.hunggang.credential_said], {
+        encoding: 'utf-8',
+      });
+      check(
+        'H3:sandbox verify 對「只含公開材料」的狀態目錄執行成功(查驗強度不變:SAID 重算 + 簽章 + TEL 撤銷)',
+        publicStateVerify.status === 0 && publicStateVerify.stdout.includes('chain verified'),
+        `status=${publicStateVerify.status} stderr=${publicStateVerify.stderr.slice(0, 200)}`,
+      );
+      const verifyPresentationSource = fs.readFileSync(path.join(ROOT, 'server', 'creds', 'verifyPresentation.ts'), 'utf-8');
+      check(
+        'H3:verifyPresentation 以 VLEI_PUBLIC_STATE_DIR 執行 sandbox verify(不再 --dir 指向 repo 根)',
+        verifyPresentationSource.includes("'--dir', VLEI_PUBLIC_STATE_DIR") && !/'--dir',\s*ROOT/.test(verifyPresentationSource),
+      );
+      const bruckAgentSource = fs.readFileSync(path.join(ROOT, 'web', 'src', 'tabs', 'BruckAgent.tsx'), 'utf-8');
+      check(
+        'H3:BruckAgent 文案「只讀 token、manifest 公鑰、data/vlei/、data/status/」現在為真(讀取範圍與程式一致)',
+        bruckAgentSource.includes('只讀 token、manifest 公鑰、data/vlei/、data/status/') && verifyPresentationSource.includes('VLEI_PUBLIC_STATE_DIR'),
+      );
+
+      // ---------- H1:query_cap 併發不得超額(函式層,非只 HTTP Promise.all)----------
+      // 設定剩餘額度 2,併發 6 筆各自合法、nonce 互異的 disclose;舊寫法(交易外讀舊快照)
+      // 實測會放行 5 筆、queries_used 衝到 13。
+      const capSetupDb = openDb();
+      const capRow = capSetupDb.prepare('SELECT query_cap, queries_used FROM mandates WHERE id = ?').get('M2') as {
+        query_cap: number;
+        queries_used: number;
+      };
+      const queryCap = capRow.query_cap;
+      const remaining = 2;
+      const concurrency = 6;
+      capSetupDb.prepare('UPDATE mandates SET queries_used = ? WHERE id = ?').run(queryCap - remaining, 'M2');
+      capSetupDb.close();
+
+      const capJwsList: string[] = [];
+      for (let i = 0; i < concurrency; i++) {
+        capJwsList.push(await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce()));
+      }
+      const capDbs = capJwsList.map(() => openDb());
+      const capResults = await Promise.all(capJwsList.map((jws, i) => processDiscloseRequest(capDbs[i], jws)));
+      capDbs.forEach((d) => d.close());
+      const capPermits = capResults.filter((r) => r.kind === 'success').length;
+      const capDenials = capResults.filter((r) => r.kind === 'error' && r.reasonCode === CODES.QUERY_CAP_EXCEEDED).length;
+      const capAfterDb = openDb();
+      const queriesUsedAfterRace = (capAfterDb.prepare('SELECT queries_used FROM mandates WHERE id = ?').get('M2') as { queries_used: number })
+        .queries_used;
+      const presentationsAfterRace = (
+        capAfterDb.prepare('SELECT COUNT(*) c FROM presentations WHERE mandate_id = ?').get('M2') as { c: number }
+      ).c;
+      capAfterDb.close();
+      check(
+        `H1:剩餘額度 ${remaining}、併發 ${concurrency} 筆合法 disclose → PERMIT 數 ≤ ${remaining}`,
+        capPermits <= remaining,
+        `permits=${capPermits} denials(QUERY_CAP_EXCEEDED)=${capDenials}`,
+      );
+      check(
+        `H1:queries_used 收斂到 ≤ query_cap(${queryCap})`,
+        queriesUsedAfterRace <= queryCap,
+        `queries_used=${queriesUsedAfterRace} cap=${queryCap}`,
+      );
+      check(
+        'H1:超額請求以 QUERY_CAP_EXCEEDED 被擋(交易內回滾,不是靜默放行)',
+        capDenials >= concurrency - remaining,
+        `denials=${capDenials} permits=${capPermits}`,
+      );
+      check('H1 對照組:額度未用罄前仍至少放行 1 筆(不是把整條路鎖死)', capPermits >= 1, `permits=${capPermits}`);
+      check(
+        'H1:PERMIT 筆數與 presentations 落庫筆數一致(扣次、出示紀錄、audit 同一筆交易)',
+        presentationsAfterRace >= capPermits,
+        `permits=${capPermits} presentations=${presentationsAfterRace}`,
+      );
+      // 還原額度,避免影響後續(本區塊之後只剩一致性守門,仍照樣復原)。
+      const capRestoreDb = openDb();
+      capRestoreDb.prepare('UPDATE mandates SET queries_used = ? WHERE id = ?').run(capRow.queries_used, 'M2');
+      capRestoreDb.close();
+    } finally {
+      await app23.close();
+    }
+  }
+
+  // 22) 一致性守門
   const violations = consistencyScan();
   check('一致性守門(docs/ 與程式目錄)', violations.length === 0);
   for (const v of violations.slice(0, 20)) console.log(`      ${v}`);

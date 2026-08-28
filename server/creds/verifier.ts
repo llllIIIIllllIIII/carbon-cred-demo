@@ -19,6 +19,13 @@ export interface VerifyResult {
   ok: boolean;
   payload?: SdJwtVcPayload;
   header?: Record<string, unknown>;
+  /**
+   * C1 修正(Phase 2 總驗收):實際用來驗章的 kid(= protected header 的 kid,對應解出的公鑰)。
+   * 上層(verifyPresentation 的 vct↔AID 綁定)必須拿這個值比對,不得只信 payload.iss——
+   * 兩者脫鉤時,攻擊者可用自己的鑰簽章、把 iss 填成他人 AID 通過綁定檢查(已由 PoC 證實)。
+   * 只在 ok:true 時有意義(ok:false 代表這把鑰沒簽過這包 claims)。
+   */
+  kid?: string;
   error?: string;
   reasonCode?: ReasonCode;
 }
@@ -68,7 +75,8 @@ export async function verifyCompactSdJwt(
   try {
     const instance = buildVerifierInstance(publicKey);
     const result = await instance.verify(sdJwtCompact, { disableStatusVerification: true });
-    return { ok: true, payload: result.payload, header: result.header };
+    // kid 回傳「實際解出驗章公鑰所用的 kid」——驗章已通過,故這把鑰確實簽過這包 claims(C1)。
+    return { ok: true, payload: result.payload, header: result.header, kid: header.kid };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e), reasonCode: classifyVerifyError(e) };
   }

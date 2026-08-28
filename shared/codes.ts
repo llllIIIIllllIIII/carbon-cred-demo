@@ -5,6 +5,14 @@
 export const CODES = {
   // 輸入驗證(Codex 審查發現 2:case_id 缺值/打錯字不得靜默塌成合法值)
   INVALID_CASE_ID: 'INVALID_CASE_ID',
+  // Phase 2:POST /api/mandates body 非 "M1"|"M2"(比照 INVALID_CASE_ID 模式)
+  INVALID_MANDATE_ID: 'INVALID_MANDATE_ID',
+  // Phase 2:POST /api/disclose 的 request_jws 無法解析,或結構缺必要欄位
+  DISCLOSE_REQUEST_INVALID: 'DISCLOSE_REQUEST_INVALID',
+  // Phase 2:request_jws 內 mandate_id(=mandate jti)查無對應 mandate
+  MANDATE_NOT_FOUND: 'MANDATE_NOT_FOUND',
+  // Phase 2:該案 pcf_aggregate 尚未簽發(disclose 不自動代簽,依幕序先跑幕 2)
+  PCF_AGGREGATE_NOT_ISSUED: 'PCF_AGGREGATE_NOT_ISSUED',
 
   // 政策決策
   POLICY_P1_PERMIT: 'POLICY_P1_PERMIT',
@@ -26,6 +34,8 @@ export const CODES = {
   CREDENTIAL_SIG_INVALID: 'CREDENTIAL_SIG_INVALID',
   CREDENTIAL_PARSE_ERROR: 'CREDENTIAL_PARSE_ERROR',
   ISSUER_UNKNOWN: 'ISSUER_UNKNOWN',
+  // Phase 2 遺留(a):vct 與實際簽發者 AID 不符其被授權角色(例如 pcf_aggregate 未由鴻鋼 LE AID 簽)
+  VCT_ISSUER_UNAUTHORIZED: 'VCT_ISSUER_UNAUTHORIZED',
   VLEI_CHAIN_BROKEN: 'VLEI_CHAIN_BROKEN',
 
   // 幕 5 放行管線

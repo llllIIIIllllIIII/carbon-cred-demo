@@ -148,7 +148,17 @@ async function ensureUpstreamCredential(db: Database.Database, caseId: PcfAggreg
   return { sdJwt: row.sd_jwt };
 }
 
-/** 簽出 pcf_aggregate(鴻鋼 sandbox LE AID 鑰);不寫入 DB——由呼叫端(route)負責 upsertCredential。 */
+/**
+ * 簽出 pcf_aggregate(鴻鋼 sandbox LE AID 鑰)並原子落庫(遺留 c 之修法)。
+ * 舊版本函式本身不寫 DB,落庫責任丟給呼叫端(route)以非原子 upsertCredential 處理——
+ * 與 ensureUpstreamCredential() 修復 pcf_upstream 併發競態前的舊寫法相同缺陷:兩個併發
+ * 呼叫各自簽出內容相同、位元組不同的 SD-JWT(隨機 disclosure 鹽),upsert 互相覆蓋,
+ * 導致回應與最終落庫版本不一致。改為函式內直接呼叫 insertCredentialIfAbsent(比照
+ * ensureUpstreamCredential 之原子 get-or-create 模式):先到者落庫,後到者棄用自己剛簽的
+ * token,一律以 DB 落庫勝者(row)重建回傳值——breakdown 為純函式計算,兩邊呼叫必然算出
+ * 相同數值,不受競態影響,故沿用本次計算結果;sdJwt/payload/precursorRef 則一律改用落庫
+ * 勝者版本,確保呼叫端(route)不需要、也不應該再自行 upsertCredential。
+ */
 export async function issuePcfAggregate(db: Database.Database, caseId: PcfAggregateCaseId): Promise<PcfAggregateIssuance> {
   const seed = readSeed();
   const agg = seed.aggregate_defaults;
@@ -214,13 +224,30 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfAggreg
   const instance = buildIssuerInstance(key);
   const sdJwt = await instance.issue(payload as unknown as SdJwtVcPayload, disclosureFrame, { header: { kid: key.kid } });
 
-  return {
+  // 原子落庫(遺留 c):不論本次簽發是否贏得競態,一律回傳落庫勝者版本。
+  const { row } = insertCredentialIfAbsent(db, {
     id: `pcf_aggregate-${caseId}`,
+    type: 'pcf_aggregate',
     caseId,
+    issuerParty: 'hunggang',
+    holderParty: 'hunggang',
     sdJwt,
     payload,
+    statusIdx,
+    statusUri,
+    issuedAt: agg.issued_at,
+    validFrom: agg.valid_from,
+    validUntil: agg.valid_until,
+  });
+  const finalPayload = JSON.parse(row.payload_json) as PcfAggregatePayload;
+
+  return {
+    id: row.id,
+    caseId,
+    sdJwt: row.sd_jwt,
+    payload: finalPayload,
     breakdown,
-    precursorRef,
+    precursorRef: finalPayload.precursor_ref,
     issuedAt: agg.issued_at,
     validFrom: agg.valid_from,
     validUntil: agg.valid_until,

@@ -17,10 +17,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { ROOT } from './db';
+import { ROOT, VLEI_PUBLIC_STATE_DIR } from './db';
 
 const VLEI_STATE = path.join(ROOT, '.vlei', 'state.json');
 const KEYS_DIR = path.join(ROOT, 'data', 'keys');
+
+/** 公開狀態檔實體路徑(vendor/vlei-sandbox WORKSPACE=".vlei"、STATE_FILE="state.json",vendor 唯讀)。 */
+export const PUBLIC_VLEI_STATE_FILE = path.join(VLEI_PUBLIC_STATE_DIR, '.vlei', 'state.json');
+
+/** actor 內屬於私鑰材料、絕不得離開 .vlei/ 的欄位(H3:公開子集匯出時一律剔除)。 */
+const ACTOR_PRIVATE_FIELDS = ['seed', 'next_seed'] as const;
 
 /** 允許取用的 sandbox 角色 → actor alias(presign-vlei.sh 同步維護)。 */
 export const SANDBOX_ROLES = {
@@ -101,6 +107,41 @@ export function loadSandboxKey(role: SandboxRole): SigningKey {
   return { kid: actor.aid, alias, privateKey: priv, publicKey: pub, publicJwk: { kty: 'OKP', crv: 'Ed25519', x } };
 }
 
+/**
+ * H3 修法:把 `.vlei/state.json` 的**公開子集**匯出到 data/vlei/public-state/.vlei/state.json,
+ * 供 Bruck 端 sandbox verify(child_process)查驗 vLEI 信任鏈時使用。
+ *
+ * 為何需要:sandbox `verify` 只吃 workspace 狀態檔,但原始狀態檔含每個 actor 的私鑰種子
+ * (seed/next_seed);CLAUDE.md:25 限定 Bruck 端只讀 token、manifest 公鑰、data/vlei/、
+ * data/status/。本函式剔除 ACTOR_PRIVATE_FIELDS 後另存一份——查驗所需材料(aid/verkey/kel/
+ * registries(TEL)/credentials/root_aid)全屬公開材料,驗證強度不變(SAID 重算、簽章驗證、
+ * TEL 撤銷狀態一項不少),但 Bruck 端從此不再碰 `.vlei/`。
+ *
+ * 本函式為 `.vlei/state.json` 的唯一讀取點所在模組(一方一鑰鐵則),由 scripts/seed.ts
+ * (make setup / make demo-reset 皆會執行)呼叫;回傳寫出的檔案路徑。
+ */
+export function writePublicVleiState(): string {
+  const state = readState();
+  const actors: Record<string, unknown> = {};
+  for (const [alias, actor] of Object.entries((state.actors ?? {}) as Record<string, Record<string, unknown>>)) {
+    const publicActor: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(actor)) {
+      if ((ACTOR_PRIVATE_FIELDS as readonly string[]).includes(k)) continue;
+      publicActor[k] = v;
+    }
+    actors[alias] = publicActor;
+  }
+  const publicState = { ...state, actors };
+
+  const dir = path.dirname(PUBLIC_VLEI_STATE_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PUBLIC_VLEI_STATE_FILE, JSON.stringify(publicState, null, 2));
+  // presign 以 umask 077 執行,seed 亦可能繼承收緊的 umask;公開材料一律放寬回可讀(比照 data/vlei/*.json)。
+  fs.chmodSync(dir, 0o755);
+  fs.chmodSync(PUBLIC_VLEI_STATE_FILE, 0o644);
+  return PUBLIC_VLEI_STATE_FILE;
+}
+
 /** 以 manifest 內的公鑰(CESR qb64 verkey)建立驗章用 KeyObject——驗證方不接觸 state.json。 */
 export function publicKeyFromQb64(verkeyQb64: string): crypto.KeyObject {
   const raw = cesrDecode(verkeyQb64);
@@ -143,4 +184,17 @@ export function loadWorkloadKey(name: WorkloadName): SigningKey {
     publicKey: crypto.createPublicKey(priv),
     publicJwk: { kty: 'OKP', crv: 'Ed25519', x: jwk.x },
   };
+}
+
+/**
+ * 幕 3 disclose 閘道用:依 request_jws header.kid 找出是哪一把 workload 鑰(僅兩把,逐一比對)。
+ * 找不到回傳 undefined——呼叫端據此判定 kid 既非 mandate.delegate_kid 綁定之鑰,亦非任何已知
+ * workload 鑰,一律以 DELEGATE_KEY_MISMATCH 處理,不另外分類。
+ */
+export function resolveWorkloadPublicKeyByKid(kid: string): crypto.KeyObject | undefined {
+  for (const name of ['hunggang-workload', 'bruck-workload'] as WorkloadName[]) {
+    const key = loadWorkloadKey(name);
+    if (key.kid === kid) return key.publicKey;
+  }
+  return undefined;
 }
