@@ -91,7 +91,7 @@ function readState(): Record<string, any> {
   }
 }
 
-/** 載入 sandbox 匯出鑰(2 LE + 2 ECR + 台驗/Brand)。 */
+/** 載入 sandbox 匯出鑰(5 LE + 2 ECR)。 */
 export function loadSandboxKey(role: SandboxRole): SigningKey {
   const alias = SANDBOX_ROLES[role];
   const state = readState();

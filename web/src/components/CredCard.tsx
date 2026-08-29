@@ -1,27 +1,39 @@
 import {
-  PCF_UPSTREAM_PUBLIC_FIELDS,
-  PCF_UPSTREAM_CUSTOMS_SD_FIELDS,
-  PCF_UPSTREAM_CUSTOMER_SD_FIELDS,
-  PCF_UPSTREAM_CONFIDENTIAL_FIELDS,
+  TC_UPSTREAM_PUBLIC_FIELDS,
+  TC_UPSTREAM_BRAND_SD_FIELDS,
+  TC_UPSTREAM_AUDIT_SD_FIELDS,
+  TC_UPSTREAM_CONFIDENTIAL_FIELDS,
 } from '../../../shared/types';
 
 const FIELD_LABELS: Record<string, string> = {
-  cn_code: '海關碼(CN Code)',
-  quantity_t: '數量(t)',
-  country_of_origin: '原產地',
-  machine_energy_hash: '機台能耗 commitment hash',
-  ppa_contract_hash: '電力採購合約(PPA)commitment hash',
-  recipe_hash: '配方 commitment hash',
-  customer_list_hash: '客戶名單 commitment hash',
-  emission_factor_table_hash: '排放係數表 hash(含產能利用率)',
-  specific_direct_embedded_emissions: '直接排放 direct(tCO2e/t)',
-  production_route: '生產路線',
-  carbon_price_paid_origin: '原產地碳定價',
-  specific_indirect_embedded_emissions: '間接排放 indirect(tCO2e/t)',
-  electricity_mix_ref: '電力排放係數來源',
-  installation_unlocode: '產地代碼(UN/LOCODE)',
-  dqr: '資料品質評級(DQR)',
-  primary_data_share: '原始資料佔比',
+  tcNo: 'TC 編號(tcNo)',
+  tcStandard: 'TC 標準(tcStandard)',
+  tcProductStandardLabelGrade: '產品標準/標籤等級',
+  tcProductCategoryCode: '產品類別代碼',
+  tcProductDetailCode: '產品細項代碼',
+  tcCertifiedRawMaterialCountryOrArea: '認證原料產地國/地區',
+  sellerTeId: '賣方 TE ID(sellerTeId)',
+  buyerTeId: '買方 TE ID(buyerTeId)',
+  tcShipmentInvoiceReferences_hash: '出貨發票參照 commitment hash',
+  unit_price_hash: '單價 commitment hash',
+  energy_invoice_hash: '能源帳單 commitment hash',
+  recycler_name_hash: '回收粒供應商名 commitment hash',
+  emission_factor_table_hash: '排放係數表 hash',
+  tcProductRawMaterialCode: '原料代碼(tcProductRawMaterialCode)',
+  tcProductRawMaterialPercentage: '原料成分比例(%)',
+  tcProductCertifiedWeight: '認證重量(kg)',
+  tcShipmentDate: '出貨日期',
+  tcShipmentNo: '出貨編號',
+  inputTcNo: '投入批次 TC 編號(inputTcNo)',
+  tcProductLastProcessorName: '最後加工廠名稱',
+  tcProductLastProcessorCountry: '最後加工廠所在國',
+  pcf_total: '碳足跡總值 pcf_total(kgCO₂e/kg)',
+  pcf_period: '碳足跡計算期間 pcf_period',
+  pcf_method: '碳足跡計算方法 pcf_method',
+  pcf_direct: '直接排放 pcf_direct(kgCO₂e/kg)',
+  pcf_indirect: '間接排放 pcf_indirect(kgCO₂e/kg)',
+  electricity_kwh_per_kg: '單位用電量(kWh/kg)',
+  pcf_factor_source: '排放係數來源 pcf_factor_source',
 };
 
 function formatValue(value: unknown): string {
@@ -46,25 +58,25 @@ export interface CredCardProps {
   sdJwt: string;
 }
 
-/** 幕 1 憑證卡:欄位以 🟢(公開層)/🟡(SD 可撕欄)/🔴(機密,僅 hash)三色標示(藍圖:129)。 */
+/** 幕 1 憑證卡:揭露層以 🟢 公開 / 🟡 品牌 / 🔵 稽核 / 🔴 僅指紋 四色標示(spec v3 §0.2 #7)。 */
 export function CredCard({ claims, sdJwt }: CredCardProps) {
   return (
     <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: 16, marginTop: 12, background: '#fff', maxWidth: 640 }}>
-      <h3 style={{ marginTop: 0 }}>pcf_upstream 憑證卡</h3>
+      <h3 style={{ marginTop: 0 }}>tc_carbon_upstream 憑證卡</h3>
       <p style={{ fontSize: 12, color: '#666' }}>
-        🟢 公開層(非 SD 明文) · 🟡 SD 可撕欄(海關層 + 客戶層) · 🔴 機密(永不進憑證,僅留 commitment hash)
+        🟢 公開(非 SD 明文) · 🟡 品牌(SD 可撕欄) · 🔵 稽核(SD 可撕欄) · 🔴 僅指紋(永不進憑證明文,僅 commitment hash)
       </p>
-      {PCF_UPSTREAM_PUBLIC_FIELDS.map((k) => (
+      {TC_UPSTREAM_PUBLIC_FIELDS.map((k) => (
         <Row key={k} label={FIELD_LABELS[k] ?? k} value={claims[k]} badge="🟢" />
       ))}
-      {PCF_UPSTREAM_CUSTOMS_SD_FIELDS.map((k) => (
+      {TC_UPSTREAM_BRAND_SD_FIELDS.map((k) => (
         <Row key={k} label={FIELD_LABELS[k] ?? k} value={claims[k]} badge="🟡" />
       ))}
-      {PCF_UPSTREAM_CUSTOMER_SD_FIELDS.map((k) => (
-        <Row key={k} label={FIELD_LABELS[k] ?? k} value={claims[k]} badge="🟡" />
+      {TC_UPSTREAM_AUDIT_SD_FIELDS.map((k) => (
+        <Row key={k} label={FIELD_LABELS[k] ?? k} value={claims[k]} badge="🔵" />
       ))}
       <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0 }}>
-        🔴 永不揭露(以上 commitment hash 代表):{PCF_UPSTREAM_CONFIDENTIAL_FIELDS.join('、')}
+        🔴 僅指紋(以上 commitment hash 代表):{TC_UPSTREAM_CONFIDENTIAL_FIELDS.join('、')}
       </p>
       <details style={{ marginTop: 12 }}>
         <summary style={{ cursor: 'pointer' }}>原始 token(一個簽章、N 張可撕欄位:{'<JWT>~<d1>~<d2>…'})</summary>

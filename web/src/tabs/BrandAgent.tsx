@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Manifest, DiscloseEvent } from '../App';
 import { LeiBadge } from './badge';
-import { PCF_UPSTREAM_CONFIDENTIAL_FIELDS } from '../../../shared/types';
 
 type CaseId = 'A' | 'B';
 
@@ -67,20 +66,23 @@ interface DiscloseOutcome {
 }
 
 /**
- * M2.allowed_claims 之顯示標籤(server/policy/claims.ts M2_ALLOWED_CLAIMS 之對照)。
- * 聚合分項(precursor_contribution / self_direct / self_indirect)刻意不列:它們不在
- * allowed_claims 內,任兩項相加減就能還原第三項與上游合計(H2 算術洩漏),永不揭露。
+ * M2.allowed_claims 之顯示標籤(server/policy/claims.ts M2_ALLOWED_CLAIMS 之對照;
+ * = shared/types.ts PCF_AGGREGATE_BRAND_SD_FIELDS 六欄)。
+ * 聚合分項(pcf_yarn / pcf_knitting / pcf_dyeing)刻意不列:它們不在 allowed_claims 內,
+ * 任兩項相加減就能還原第三項與布廠自家強度(H2 算術洩漏),永不揭露。
  */
 const FIELD_LABELS: Record<string, string> = {
-  cn_code: '下游 CN Code',
-  precursor_ref: 'Precursor 參照(上游 id + hash)',
-  carbon_total_tco2e_per_t: '聚合總值(買方合約層;唯一的排放數字)',
-  carbon_price_paid_origin: '原產地碳定價(客戶層)',
+  pcf_total: '碳足跡總值 pcf_total(kgCO₂e/kg;唯一的排放數字)',
+  pcf_period: '碳足跡計算期間 pcf_period',
+  pcf_method: '碳足跡計算方法 pcf_method',
+  tcProductRawMaterialPercentage: '原料成分比例 tcProductRawMaterialPercentage(%)',
+  verification: '查證狀態 verification',
+  quantity_kg: '出貨重量 quantity_kg(kg)',
 };
 
 const REASON_HINTS: Record<string, string> = {
-  PCF_AGGREGATE_NOT_ISSUED: '該案 pcf_aggregate 尚未簽發——請先至「鴻鋼閘道」分頁完成幕 2 聚合簽發。',
-  POLICY_P2_CONFIDENTIAL: '機密標籤欄位(machine_energy 等)一律拒絕,不看 mandate 寫什麼(Cedar P2 forbid 優先於 permit)。',
+  PCF_AGGREGATE_NOT_ISSUED: '該案 pcf_aggregate 尚未簽發——請先至「誠紡閘道」分頁完成幕 2 聚合簽發。',
+  POLICY_P2_CONFIDENTIAL: '機密標籤欄位(全廠產量 plant_total_output 等)一律拒絕,不看 mandate 寫什麼(Cedar P2 forbid 優先於 permit)。',
   REPLAY_DETECTED: '同一 (mandate_id, request_nonce) 已出示過,判定為重放。',
   CLAIM_NOT_IN_MANDATE: '請求的欄位不在 mandate.allowed_claims 範圍內。',
 };
@@ -187,7 +189,7 @@ export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null
     setOutcome(null);
     setVerifyResult(null);
     try {
-      const requestedClaims = overreach ? [...mandateSummary.allowed_claims, 'machine_energy'] : [...mandateSummary.allowed_claims];
+      const requestedClaims = overreach ? [...mandateSummary.allowed_claims, 'plant_total_output'] : [...mandateSummary.allowed_claims];
 
       // 「workload 簽章取得」定案:瀏覽器不得持有 brand-workload 私鑰,經 demo 輔助 route
       // 代簽 request_jws(仍走 POST /api/disclose 完整驗證管線,不繞過任何驗證)。
@@ -251,16 +253,16 @@ export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null
 
   return (
     <section>
-      <LeiBadge role={manifest?.brand} fallback="Brand & Söhne GmbH" />
-      <h2>Brand Agent · 委任查驗(幕 3)＋越界攔截(幕 4)</h2>
+      <LeiBadge role={manifest?.brand} fallback="Nordlicht Sports AG" />
+      <h2>Nordlicht 品牌 Agent · 委任查驗(幕 3)＋越界攔截(幕 4)</h2>
       <p style={{ color: '#666' }}>
-        Agent-2 持 M2 mandate 出示查驗請求——鴻鋼閘道只回 mandate 範圍內的欄位;若加碼索取機密欄位,閘道 Cedar P2 一律拒絕,不看 mandate 寫什麼。
+        Agent-2 持 M2 mandate 出示查驗請求——誠紡閘道只回 mandate 範圍內的欄位;若加碼索取機密欄位,誠紡閘道 Cedar P2 一律拒絕,不看 mandate 寫什麼。
       </p>
 
       {mandateError && <p style={{ color: 'crimson' }}>{mandateError}</p>}
 
       <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: 16, marginTop: 12, background: '#fff', maxWidth: 640 }}>
-        <h3 style={{ marginTop: 0 }}>M2 委任狀(Brand 永續長 ECR 鑰簽發)</h3>
+        <h3 style={{ marginTop: 0 }}>M2 委任狀(Nordlicht 永續長 Anna Schäfer ECR 鑰簽發)</h3>
         {mandateBusy && !mandateSummary && <p>簽發中…</p>}
         {mandateSummary && (
           <>
@@ -300,7 +302,7 @@ export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null
           disabled={discloseBusy || !mandateSummary}
           style={{ background: '#c0392b', color: '#fff', border: '1px solid #7c2419', borderRadius: 6, padding: '6px 12px', cursor: 'pointer' }}
         >
-          加碼索取 machine_energy ▶
+          加碼索取 全廠產量 plant_total_output ▶
         </button>
       </div>
 
@@ -326,10 +328,9 @@ export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null
             ) : null,
           )}
           <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#666' }}>
-            上游明細欄位、機密欄位({PCF_UPSTREAM_CONFIDENTIAL_FIELDS.join('、')})與三個聚合分項
-            (precursor_contribution / self_direct / self_indirect)
-            <strong> 不存在於這份文件裡</strong>——不是遮罩,是這份 presentation 從未包含這些欄位。
-            揭露欄位中的排放數字只有聚合總值一個,買方無法用加減還原上游合計。
+            全廠產量、帳單、紗廠名——連遮罩都沒有,是這份 presentation 從未包含這些欄位;三個聚合分項
+            (pcf_yarn / pcf_knitting / pcf_dyeing)<strong> 也不存在於這份文件裡</strong>——不是遮罩,是從未包含。
+            揭露欄位中的排放數字只有聚合總值一個,品牌方無法用加減還原上游合計。
           </p>
           <details style={{ marginTop: 12 }}>
             <summary style={{ cursor: 'pointer' }}>原始 presentation token(一個簽章、N 張可撕欄位)</summary>
@@ -345,7 +346,7 @@ export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null
             <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#0d1b2a', color: '#cde3ff' }}>OFFLINE</span>
           </h3>
           <p style={{ fontSize: 12, color: '#666', marginTop: 0 }}>
-            只讀 token、manifest 公鑰、data/vlei/、data/status/——不呼叫鴻鋼閘道 API(與 scripts/verify-offline.ts 同一驗證邏輯)。
+            只讀 token、manifest 公鑰、data/vlei/、data/status/——不呼叫誠紡閘道 API(與 scripts/verify-offline.ts 同一驗證邏輯)。
           </p>
           {verifyResult.checks.map((c) => (
             <p key={c.name} style={{ margin: '4px 0', fontSize: 13, color: c.ok ? '#0a7a2f' : '#c0392b' }}>

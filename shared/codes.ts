@@ -39,7 +39,7 @@ export const CODES = {
   CREDENTIAL_SIG_INVALID: 'CREDENTIAL_SIG_INVALID',
   CREDENTIAL_PARSE_ERROR: 'CREDENTIAL_PARSE_ERROR',
   ISSUER_UNKNOWN: 'ISSUER_UNKNOWN',
-  // Phase 2 遺留(a):vct 與實際簽發者 AID 不符其被授權角色(例如 pcf_aggregate 未由鴻鋼 LE AID 簽)
+  // Phase 2 遺留(a):vct 與實際簽發者 AID 不符其被授權角色(例如 pcf_aggregate 未由FAB LE AID 簽)
   VCT_ISSUER_UNAUTHORIZED: 'VCT_ISSUER_UNAUTHORIZED',
   VLEI_CHAIN_BROKEN: 'VLEI_CHAIN_BROKEN',
 

@@ -5,10 +5,10 @@
  *     先驗 compact JWS 簽章(manifest 公鑰),再解碼 payload.status_list(bits==1、lst 可 zlib 解壓)
  *  3) manifest.json 存在且 6 角色齊(四家法人 + 兩張 ECR)
  *  4) sandbox verify 對兩張 ECR SAID 成功
- *  5) key loader 以 Thép Việt LE 鑰簽測試 payload、以 manifest 公鑰驗證
+ *  5) key loader 以 YARN LE 鑰簽測試 payload、以 manifest 公鑰驗證
  *  6) git check-ignore:.vlei/、data/keys/、db/*.sqlite
  *  7) 一致性守門(docs/ 與程式目錄)
- *  8) 幕 1(簽發 pcf_upstream,架構決策 §4):issue 回傳可解析 SD-JWT、verify() 以 manifest
+ *  8) 幕 1(簽發 tc_carbon_upstream,架構決策 §4):issue 回傳可解析 SD-JWT、verify() 以 manifest
  *     公鑰驗過、竄改 payload 1 byte 同一驗證路徑失敗、欄位三分法(公開層明文/SD 揭露/機密
  *     只留 commitment hash)、status.status_list.idx/uri、issued_at 回填約三個月前
  */
@@ -27,7 +27,8 @@ import { STATUS_MEDIA_TYPE, STATUS_LIST_SIZE, statusListUri } from '../server/st
 import { verifyCompactSdJwt } from '../server/creds/verifier';
 import { insertCredentialIfAbsent } from '../server/creds/store';
 import { tamperPayloadByte } from '../server/creds/tamper';
-import { issuePcfAggregate, PCF_AGGREGATE_VCT } from '../server/creds/pcfAggregate';
+import { issuePcfAggregate, computeAggregateBreakdown, PCF_AGGREGATE_VCT } from '../server/creds/pcfAggregate';
+import { computeDyeing } from '../server/creds/pcfDyeing';
 import { buildIssuerInstance } from '../server/creds/issuer';
 import { presentSelectedDisclosures, presentRawDisclosures, NeverDisclosableClaimError } from '../server/creds/presenter';
 import { verifyPresentation, verifyVleiChainSandbox } from '../server/creds/verifyPresentation';
@@ -38,10 +39,10 @@ import { M2_ALLOWED_CLAIMS, NEVER_DISCLOSABLE_CLAIMS, isSelectableDisclosure } f
 import { PUBLIC_VLEI_STATE_FILE } from '../server/keys';
 import { CODES } from '../shared/codes';
 import {
-  PCF_UPSTREAM_PUBLIC_FIELDS,
-  PCF_UPSTREAM_CUSTOMS_SD_FIELDS,
-  PCF_UPSTREAM_CUSTOMER_SD_FIELDS,
-  PCF_UPSTREAM_CONFIDENTIAL_FIELDS,
+  TC_UPSTREAM_PUBLIC_FIELDS,
+  TC_UPSTREAM_BRAND_SD_FIELDS,
+  TC_UPSTREAM_AUDIT_SD_FIELDS,
+  TC_UPSTREAM_CONFIDENTIAL_FIELDS,
   type Manifest,
 } from '../shared/types';
 
@@ -99,10 +100,44 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
+// v3 檢查 7:鋼鐵版殘留禁詞(server/web/scripts/data/policies/CLAUDE.md;docs 為歷史文件不掃)。
+// 禁詞以字元拼接構造——若直接寫字面值,本檔自己就會被驗收用的外部 git grep 命中。
+const STEEL_TERMS = [
+  '鴻' + '鋼',
+  'Thép' + ' ' + 'Việt',
+  'Br' + 'uck',
+  '台' + '驗',
+  '扣' + '件',
+  '線' + '材',
+  'CB' + 'AM',
+  '海' + '關',
+  'EA' + 'F',
+  'BF-' + 'BOF',
+  'USD' + 'C',
+];
+const STEEL_RE = new RegExp(`(${STEEL_TERMS.join('|')}|0x[0-9a-fA-F]{4})`);
+
 function consistencyScan(): string[] {
   const dirs = ['docs', 'server', 'shared', 'scripts', 'web/src', 'policies'];
   const self = path.join(ROOT, 'scripts', 'test.ts');
   const violations: string[] = [];
+
+  // 鋼鐵殘留掃描(程式與資料面;無任何豁免)
+  const steelFiles: string[] = [path.join(ROOT, 'CLAUDE.md'), path.join(ROOT, 'data', 'seed.json')];
+  for (const d of ['server', 'shared', 'scripts', 'web/src', 'policies']) {
+    const full = path.join(ROOT, d);
+    if (fs.existsSync(full)) steelFiles.push(...walk(full));
+  }
+  for (const file of steelFiles) {
+    if (path.resolve(file) === path.resolve(self)) continue;
+    if (!fs.existsSync(file)) continue;
+    const rel = path.relative(ROOT, file);
+    fs.readFileSync(file, 'utf-8')
+      .split('\n')
+      .forEach((line, i) => {
+        if (STEEL_RE.test(line)) violations.push(`${rel}:${i + 1} [鋼鐵版殘留禁詞] ${line.trim().slice(0, 80)}`);
+      });
+  }
   // 文字規則(同一行有否定/範圍標記者豁免——docs 內以「不得出現…」引用禁詞屬合法)
   const textRules: Array<[string, RegExp]> = [
     ['5 個角色', /(5 ?個角色|五個角色)/],
@@ -146,15 +181,26 @@ function consistencyScan(): string[] {
 async function main() {
   console.log('== Phase 0 驗收(make test)==');
 
-  // 3) manifest
+  // 3) manifest(v3:7 角色 = 5 LE + 2 ECR)
   const manifestPath = path.join(ROOT, 'data', 'vlei', 'manifest.json');
-  const ROLES = ['yarn', 'fab', 'brand', 'cb', 'fab_cfo', 'brand_cso'];
+  const LE_ROLES = ['yarn', 'fab', 'dye', 'brand', 'cb'];
+  const ECR_ROLES = ['fab_cfo', 'brand_cso'];
+  const ROLES = [...LE_ROLES, ...ECR_ROLES];
   let manifest: Manifest | null = null;
   if (fs.existsSync(manifestPath)) manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   check(
-    'manifest.json 存在且 6 角色齊(四家法人 + 兩張 ECR)',
+    'manifest.json 存在且 7 角色齊(5 LE + 2 ECR)',
     !!manifest && ROLES.every((r) => manifest![r]?.aid && manifest![r]?.public_key && manifest![r]?.credential_said && manifest![r]?.lei?.length === 20),
     manifest ? `roles=${Object.keys(manifest).join(',')}` : 'manifest 不存在',
+  );
+  check(
+    'manifest kind 正確(5 × le + 2 × ecr)',
+    !!manifest && LE_ROLES.every((r) => manifest![r]?.kind === 'le') && ECR_ROLES.every((r) => manifest![r]?.kind === 'ecr'),
+    manifest ? JSON.stringify(Object.fromEntries(ROLES.map((r) => [r, manifest![r]?.kind]))) : 'manifest 不存在',
+  );
+  check(
+    'dye 的 presentation 檔存在(data/vlei/dye.presentation.json)',
+    !!manifest && fs.existsSync(path.join(ROOT, manifest.dye?.presentation_file ?? 'data/vlei/dye.presentation.json')),
   );
   if (!manifest) process.exit(finish());
 
@@ -173,7 +219,7 @@ async function main() {
   const header = decodeProtectedHeader(token);
   check('Status List Token header.typ == "statuslist+jwt"', header.typ === 'statuslist+jwt', `typ=${header.typ}`);
 
-  // 驗證方順序:先驗 compact JWS 簽章(鴻鋼 LE 公鑰,取自 manifest),再解碼 payload
+  // 驗證方順序:先驗 compact JWS 簽章(FAB LE 公鑰,取自 manifest),再解碼 payload
   let payload: Record<string, any> | null = null;
   try {
     payload = (await jwtVerify(token, publicKeyFromQb64(manifest.fab.public_key))).payload as Record<string, any>;
@@ -191,13 +237,13 @@ async function main() {
   check('lst 可 zlib 解壓為位元陣列', !!inflated && inflated.length === STATUS_LIST_SIZE / 8, `bytes=${inflated?.length}`);
   await app.close();
 
-  // 4) sandbox verify × 2 ECR
+  // 4) sandbox verify × 2 ECR + dye LE(v3 新增角色的信任鏈)
   const py = path.join(ROOT, '.venv', 'bin', 'python');
   const sb = path.join(ROOT, 'vendor', 'vlei-sandbox', 'scripts', 'vlei_sandbox.py');
-  for (const role of ['fab_cfo', 'brand_cso'] as const) {
+  for (const role of ['fab_cfo', 'brand_cso', 'dye'] as const) {
     const said = manifest[role].credential_said;
     const r = spawnSync(py, [sb, '--dir', ROOT, 'verify', '--said', said], { encoding: 'utf-8' });
-    check(`sandbox verify ${role} ECR(${said.slice(0, 12)}…)`, r.status === 0 && r.stdout.includes('chain verified'));
+    check(`sandbox verify ${role}(${said.slice(0, 12)}…)`, r.status === 0 && r.stdout.includes('chain verified'));
   }
 
   // 5) key loader 簽驗章
@@ -206,9 +252,9 @@ async function main() {
     const payloadBuf = Buffer.from('carbon-cred-demo · phase0 · key-loader self test');
     const sig = crypto.sign(null, payloadBuf, k.privateKey);
     const ok = crypto.verify(null, payloadBuf, publicKeyFromQb64(manifest.yarn.public_key), sig);
-    check('key loader:Thép Việt LE 鑰簽章 → manifest 公鑰驗證成功', ok);
+    check('key loader:YARN LE 鑰簽章 → manifest 公鑰驗證成功', ok);
   } catch (e) {
-    check('key loader:Thép Việt LE 鑰簽章 → manifest 公鑰驗證成功', false, String(e));
+    check('key loader:YARN LE 鑰簽章 → manifest 公鑰驗證成功', false, String(e));
   }
 
   // 6) git check-ignore
@@ -238,7 +284,7 @@ async function main() {
     check('.vlei 權限收緊(dir 700 / state.json 600)', false, String(e));
   }
 
-  // 8) 幕 1:簽發 pcf_upstream(POST /api/issue/upstream)+ verify()/竄改示範 + 欄位三分法
+  // 8) 幕 1:簽發 tc_carbon_upstream(POST /api/issue/upstream)+ verify()/竄改示範 + 欄位三分法
   {
     const seed = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8'));
     const app1 = buildServer();
@@ -267,7 +313,7 @@ async function main() {
       }
       check(
         '簽發回傳之 compact SD-JWT 可解析(header.payload.signature~d1~d2…)',
-        jwtPart.split('.').length === 3 && disclosureCount === PCF_UPSTREAM_CUSTOMS_SD_FIELDS.length + PCF_UPSTREAM_CUSTOMER_SD_FIELDS.length,
+        jwtPart.split('.').length === 3 && disclosureCount === TC_UPSTREAM_BRAND_SD_FIELDS.length + TC_UPSTREAM_AUDIT_SD_FIELDS.length,
         `disclosures=${disclosureCount}`,
       );
 
@@ -287,15 +333,15 @@ async function main() {
       const verifyBody = verifyRes.json() as { valid: boolean; error?: string; payload?: Record<string, unknown> };
       check('verify() 以 manifest 公鑰驗證通過', verifyRes.statusCode === 200 && verifyBody.valid === true, JSON.stringify(verifyBody).slice(0, 200));
       check(
-        'verify() 回傳之 payload 含已揭露之海關/客戶層欄位',
-        verifyBody.payload?.specific_direct_embedded_emissions === seed.cases.A.direct && verifyBody.payload?.production_route === 'EAF',
+        'verify() 回傳之 payload 含已揭露之品牌/稽核層欄位(pcf_direct 與 tcStandard 對得上 seed)',
+        verifyBody.payload?.pcf_direct === seed.upstream_defaults.pcf_direct && verifyBody.payload?.tcStandard === seed.upstream_defaults.tcStandard,
       );
 
-      // H1 負向測項:以他方(鴻鋼)公鑰驗本方(Thép Việt)的 pcf_upstream 必須失敗(信任邊界原則
+      // H1 負向測項:以他方(FAB)公鑰驗本方(YARN)的 tc_carbon_upstream 必須失敗(信任邊界原則
       // 「一方一鑰」;繞過 kid 自動解析,強制傳入錯誤的公鑰解析函式)。
       const wrongPartyResult = await verifyCompactSdJwt(issued.sd_jwt, () => publicKeyFromQb64(manifest!.fab.public_key));
       check(
-        'H1:以鴻鋼公鑰驗 Thép Việt 的 pcf_upstream 必須失敗(一方一鑰)',
+        'H1:以FAB公鑰驗 YARN 的 tc_carbon_upstream 必須失敗(一方一鑰)',
         wrongPartyResult.ok === false && wrongPartyResult.reasonCode === CODES.CREDENTIAL_SIG_INVALID,
         JSON.stringify({ ok: wrongPartyResult.ok, reasonCode: wrongPartyResult.reasonCode, error: wrongPartyResult.error }),
       );
@@ -323,28 +369,29 @@ async function main() {
 
       // (d) 欄位三分法:公開層明文在原始 JWT payload、SD 欄以 disclosure 存在(不在原始 payload)、
       //     機密欄位名稱/原始值不出現在憑證任何層,commitment/emission_factor_table_hash 則以明文存在
-      const publicFieldsPresent = PCF_UPSTREAM_PUBLIC_FIELDS.every((k) => k in rawPayload);
-      check('公開層欄位(cn_code/quantity_t/country_of_origin/四個 commitment hash)明文存在於原始 JWT payload', publicFieldsPresent, JSON.stringify(Object.keys(rawPayload)));
+      const publicFieldsPresent = TC_UPSTREAM_PUBLIC_FIELDS.every((k) => k in rawPayload);
+      check('公開層欄位(TC 公開欄 + 五個 commitment hash)明文存在於原始 JWT payload', publicFieldsPresent, JSON.stringify(Object.keys(rawPayload)));
 
-      const sdFields = [...PCF_UPSTREAM_CUSTOMS_SD_FIELDS, ...PCF_UPSTREAM_CUSTOMER_SD_FIELDS];
+      const sdFields = [...TC_UPSTREAM_BRAND_SD_FIELDS, ...TC_UPSTREAM_AUDIT_SD_FIELDS];
       const sdFieldsHiddenFromRawPayload = sdFields.every((k) => !(k in rawPayload));
-      check('海關層 + 客戶層欄位不以明文存在於原始 JWT payload(只在 disclosure 內)', sdFieldsHiddenFromRawPayload);
+      check('品牌層 + 稽核層欄位不以明文存在於原始 JWT payload(只在 disclosure 內)', sdFieldsHiddenFromRawPayload);
       const sdFieldsDisclosed = sdFields.every((k) => k in (issued.claims ?? {}));
-      check('海關層 + 客戶層欄位以 disclosure 形式存在(issue 回應之 claims 含全部揭露)', sdFieldsDisclosed);
+      check('品牌層 + 稽核層欄位以 disclosure 形式存在(issue 回應之 claims 含全部揭露)', sdFieldsDisclosed);
 
       const confidentialValues = [
-        seed.pcf_defaults.confidential.machine_energy,
-        seed.pcf_defaults.confidential.ppa_contract,
-        seed.pcf_defaults.confidential.recipe,
-        seed.pcf_defaults.confidential.customer_list,
+        seed.upstream_defaults.confidential.invoice_refs,
+        seed.upstream_defaults.confidential.unit_price,
+        seed.upstream_defaults.confidential.energy_invoice,
+        seed.upstream_defaults.confidential.recycler_name,
       ];
       const noConfidentialLeak =
-        PCF_UPSTREAM_CONFIDENTIAL_FIELDS.every((name) => !issued.sd_jwt.includes(name)) && confidentialValues.every((v) => !issued.sd_jwt.includes(v));
-      check('機密欄位名稱與原始值(machine_energy/ppa_contract/recipe/customer_list/capacity_utilization)不出現於憑證任何層', noConfidentialLeak);
+        TC_UPSTREAM_CONFIDENTIAL_FIELDS.every((name) => !(name in rawPayload) && !(name in (issued.claims ?? {}))) &&
+        confidentialValues.every((v) => !issued.sd_jwt.includes(v));
+      check('機密欄位名稱與原始值(invoice_refs/unit_price/energy_invoice/recycler_name)不出現於憑證任何層', noConfidentialLeak);
 
-      const hashFields = ['machine_energy_hash', 'ppa_contract_hash', 'recipe_hash', 'customer_list_hash', 'emission_factor_table_hash'];
+      const hashFields = ['tcShipmentInvoiceReferences_hash', 'unit_price_hash', 'energy_invoice_hash', 'recycler_name_hash', 'emission_factor_table_hash'];
       const hashesPresent = hashFields.every((k) => typeof rawPayload[k] === 'string' && /^[0-9a-f]{64}$/.test(rawPayload[k] as string));
-      check('commitment hash 與 emission_factor_table_hash(含 capacity_utilization)以一般 claim 存在,皆為 SHA-256 hex', hashesPresent);
+      check('commitment hash 與 emission_factor_table_hash 以一般 claim 存在,皆為 SHA-256 hex', hashesPresent);
 
       // (e) status.status_list.idx/uri
       const status = rawPayload.status as { status_list?: { idx?: number; uri?: string } } | undefined;
@@ -358,9 +405,9 @@ async function main() {
       //     值承載)——Codex 審查發現 3:改斷言固定事實,不再用 Date.now() 換算天數,避免驗收測試
       //     隨真實時間推移而翻紅。
       check(
-        `issued_at(${issued.issued_at})與 data/seed.json pcf_defaults.issued_at 一致`,
-        issued.issued_at === seed.pcf_defaults.issued_at,
-        `got=${issued.issued_at} expected=${seed.pcf_defaults.issued_at}`,
+        `issued_at(${issued.issued_at})與 data/seed.json upstream_defaults.issued_at 一致`,
+        issued.issued_at === seed.upstream_defaults.issued_at,
+        `got=${issued.issued_at} expected=${seed.upstream_defaults.issued_at}`,
       );
       check(
         `效期涵蓋 2026-Q3(valid_from ${issued.valid_from} ≤ 2026-07-01 且 valid_until ${issued.valid_until} ≥ 2026-09-30)`,
@@ -381,35 +428,42 @@ async function main() {
     const app2 = buildServer();
     try {
       // F1(Codex adversarial review):/api/aggregate 已不再回完整可再揭露 sd_jwt / 整包 claims。
-      // 回應形狀改為「鴻鋼自有閘道頁」內部檢視;完整 SD-JWT 屬鴻鋼自持,改由 credentials 表(鴻鋼自有 DB)讀取,
-      // 密碼學驗章強度不變(同一 /api/creds/verify 路徑),只是憑證來源改為鴻鋼內部而非跨組織 HTTP 回應。
+      // 回應形狀改為「FAB自有閘道頁」內部檢視;完整 SD-JWT 屬FAB自持,改由 credentials 表(FAB自有 DB)讀取,
+      // 密碼學驗章強度不變(同一 /api/creds/verify 路徑),只是憑證來源改為FAB內部而非跨組織 HTTP 回應。
       type AggResult = {
         id: string;
         breakdown: {
-          precursor_contribution_tco2e_per_t: number;
-          self_direct_tco2e_per_t: number;
-          self_indirect_tco2e_per_t: number;
-          carbon_total_tco2e_per_t: number;
+          pcf_yarn: number;
+          pcf_knitting: number;
+          pcf_dyeing: number;
+          pcf_total: number;
         };
-        cn_code: string;
-        carbon_price_paid_origin: string;
-        precursor_ref: { id: string; hash: string };
+        product: string;
+        hs6: string;
+        origin: string;
+        quantity_kg: number;
+        precursor_refs: Array<{ id: string; hash: string }>;
         status: { idx: number; uri: string };
         issued_at: string;
         valid_from: string;
         valid_until: string;
       };
-      const byCase: Record<'A' | 'B', { agg: AggResult; rawResponse: Record<string, unknown>; sdJwt: string; upstreamSdJwt: string; upstreamIssuedAt: string }> =
-        {} as any;
+      const byCase: Record<
+        'A' | 'B',
+        { agg: AggResult; rawResponse: Record<string, unknown>; sdJwt: string; upstreamSdJwt: string; dyeingSdJwt: string; upstreamIssuedAt: string }
+      > = {} as any;
 
       for (const c of ['A', 'B'] as const) {
-        // 先確保該案上游憑證存在(幕 1 邏輯),取得其 sd_jwt/issued_at 供後續比對
+        // 先確保該案兩張外部輸入憑證存在(幕 1/前置邏輯),取得其 sd_jwt/issued_at 供後續比對
         const upstreamRes = await app2.inject({ method: 'POST', url: '/api/issue/upstream', payload: { case_id: c } });
         const upstreamBody = upstreamRes.json() as { sd_jwt: string; issued_at: string };
+        const dyeingRes = await app2.inject({ method: 'POST', url: `/api/issue/dyeing?case=${c}` });
+        check(`POST /api/issue/dyeing?case=${c} 回 200`, dyeingRes.statusCode === 200, `status=${dyeingRes.statusCode} body=${dyeingRes.body.slice(0, 200)}`);
+        const dyeingBody = dyeingRes.json() as { sd_jwt: string; claims: Record<string, unknown> };
 
         const aggRes = await app2.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: c } });
         check(`POST /api/aggregate(案 ${c})回 200`, aggRes.statusCode === 200, `status=${aggRes.statusCode} body=${aggRes.body.slice(0, 200)}`);
-        // 完整 pcf_aggregate SD-JWT 為鴻鋼自持——自 credentials 表(鴻鋼自有 DB)讀,不從 HTTP 回應取。
+        // 完整 pcf_aggregate SD-JWT 為 FAB 自持——自 credentials 表(FAB 自有 DB)讀,不從 HTTP 回應取。
         const aggDb = openDb();
         const aggDbRow = aggDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get(`pcf_aggregate-${c}`) as { sd_jwt: string } | undefined;
         aggDb.close();
@@ -418,9 +472,43 @@ async function main() {
           rawResponse: aggRes.json() as Record<string, unknown>,
           sdJwt: aggDbRow?.sd_jwt ?? '',
           upstreamSdJwt: upstreamBody.sd_jwt,
+          dyeingSdJwt: dyeingBody.sd_jwt,
           upstreamIssuedAt: upstreamBody.issued_at,
         };
       }
+
+      // v3 檢查 2:pcf_dyeing A/B 由 computeDyeing 與獨立算式交叉驗證 = seed expected_pcf_dyeing;
+      // A/B 差異只來自 heat_source / renewable_share(dyeing_defaults 共用)。
+      const ef = seed.emission_factor_table;
+      const dd = seed.dyeing_defaults;
+      for (const c of ['A', 'B'] as const) {
+        const cs = seed.cases[c];
+        const viaFn = computeDyeing(dd, ef, cs.heat_source, cs.renewable_share);
+        // 獨立算式(不經 computeDyeing;round4 亦獨立實作)
+        const r4 = (n: number) => Math.round(n * 10000) / 10000;
+        const fuel = cs.heat_source === 'coal' ? ef.coal_kg_per_mj : ef.natural_gas_kg_per_mj;
+        const indepDirect = r4((dd.heat_mj_per_kg / ef.boiler_efficiency[cs.heat_source]) * fuel);
+        const indepIndirect = r4(dd.electricity_kwh_per_kg * ef.grid_tw_kg_per_kwh * (1 - cs.renewable_share));
+        const indepTotal = r4(indepDirect + indepIndirect);
+        check(
+          `v3:pcf_dyeing(案 ${c})computeDyeing 與獨立算式交叉驗證一致且 = expected_pcf_dyeing(${cs.expected_pcf_dyeing})`,
+          viaFn.total === indepTotal && viaFn.total === cs.expected_pcf_dyeing,
+          `fn=${viaFn.total} indep=${indepTotal} expected=${cs.expected_pcf_dyeing}`,
+        );
+        // 憑證內的 pcf_total 亦必須等於計算值(不寫死)
+        const dyeVerify = await app2.inject({ method: 'POST', url: '/api/creds/verify', payload: { sd_jwt: byCase[c].dyeingSdJwt } });
+        const dyePayload = (dyeVerify.json() as { valid: boolean; payload?: Record<string, unknown> }).payload ?? {};
+        check(
+          `v3:pcf_dyeing(案 ${c})憑證驗章通過且 pcf_total/heat_source 對得上計算值與 seed`,
+          (dyeVerify.json() as { valid: boolean }).valid === true && dyePayload.pcf_total === cs.expected_pcf_dyeing && dyePayload.heat_source === cs.heat_source,
+          `pcf_total=${dyePayload.pcf_total} heat_source=${dyePayload.heat_source}`,
+        );
+      }
+      check(
+        'v3:A/B 染整差異只來自 heat_source/renewable_share(dyeing_defaults 共用一組)',
+        seed.cases.A.heat_source !== seed.cases.B.heat_source && seed.cases.A.renewable_share !== seed.cases.B.renewable_share,
+        JSON.stringify({ A: seed.cases.A.heat_source, B: seed.cases.B.heat_source }),
+      );
 
       const A = byCase.A.agg;
       const B = byCase.B.agg;
@@ -439,11 +527,11 @@ async function main() {
           NEVER_DISCLOSABLE_CLAIMS.every((f) => !(f in resp)),
           `keys=${Object.keys(resp).join(',')}`,
         );
-        // 內部檢視 breakdown 仍在(鴻鋼自有閘道頁 StackChart 真值來源)——F1 收斂的是跨組織可攜 token,不砍自有檢視。
-        check(`F1 對照組:案 ${c} 回應仍含 breakdown(鴻鋼自有閘道頁疊層圖真值不受影響)`, typeof resp.breakdown === 'object' && resp.breakdown != null, respJson.slice(0, 120));
+        // 內部檢視 breakdown 仍在(FAB自有閘道頁 StackChart 真值來源)——F1 收斂的是跨組織可攜 token,不砍自有檢視。
+        check(`F1 對照組:案 ${c} 回應仍含 breakdown(FAB自有閘道頁疊層圖真值不受影響)`, typeof resp.breakdown === 'object' && resp.breakdown != null, respJson.slice(0, 120));
       }
 
-      // (a) 鴻鋼自持之完整 pcf_aggregate SD-JWT(自 credentials 表讀)可解析
+      // (a) FAB自持之完整 pcf_aggregate SD-JWT(自 credentials 表讀)可解析
       let jwtPartA = '';
       try {
         jwtPartA = splitSdJwt(byCase.A.sdJwt).jwt;
@@ -452,62 +540,90 @@ async function main() {
       }
       check('pcf_aggregate(案 A)sd_jwt 可解析(header.payload.signature)', jwtPartA.split('.').length === 3);
 
-      // (b) pcf_aggregate 以鴻鋼 manifest 公鑰驗章通過(同一 /api/creds/verify 路徑,依 kid 解出鴻鋼公鑰)
+      // (b) pcf_aggregate 以FAB manifest 公鑰驗章通過(同一 /api/creds/verify 路徑,依 kid 解出FAB公鑰)
       const verifyA = await app2.inject({ method: 'POST', url: '/api/creds/verify', payload: { sd_jwt: byCase.A.sdJwt } });
       const verifyABody = verifyA.json() as { valid: boolean; payload?: Record<string, unknown> };
-      check('pcf_aggregate(案 A)以鴻鋼 manifest 公鑰驗章通過', verifyABody.valid === true, JSON.stringify(verifyABody).slice(0, 200));
+      check('pcf_aggregate(案 A)以FAB manifest 公鑰驗章通過', verifyABody.valid === true, JSON.stringify(verifyABody).slice(0, 200));
       const verifyB = await app2.inject({ method: 'POST', url: '/api/creds/verify', payload: { sd_jwt: byCase.B.sdJwt } });
-      check('pcf_aggregate(案 B)以鴻鋼 manifest 公鑰驗章通過', (verifyB.json() as { valid: boolean }).valid === true);
+      check('pcf_aggregate(案 B)以FAB manifest 公鑰驗章通過', (verifyB.json() as { valid: boolean }).valid === true);
 
-      // (c) 聚合值正確(規格v2 §4.3:自身製程 + 前驅物內含排放 × 投入係數;此處為獨立算式,不呼叫production computeAggregateBreakdown)
-      const expectedA = agg.precursor_input_ratio_t_per_t * (seed.cases.A.direct + seed.cases.A.indirect) + agg.self_direct + agg.self_indirect;
-      const expectedB = agg.precursor_input_ratio_t_per_t * (seed.cases.B.direct + seed.cases.B.indirect) + agg.self_direct + agg.self_indirect;
+      // (c) 三段聚合值正確(spec v3 §4.4;此處為獨立算式 + computeAggregateBreakdown 交叉驗證,
+      //     兩者皆與 seed 的 expected_pcf_total 比對——v3 檢查 3)
+      const r4agg = (n: number) => Math.round(n * 10000) / 10000;
+      const yarnTotalIndep = r4agg(seed.upstream_defaults.pcf_direct + r4agg(seed.upstream_defaults.electricity_kwh_per_kg * ef.grid_vn_kg_per_kwh));
       const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
-      check(
-        `案 A 聚合值 = 1.05×1.05+0.08+0.33 ≈ ${expectedA.toFixed(4)}(§4.3 精確語意)`,
-        close(A.breakdown.carbon_total_tco2e_per_t, expectedA),
-        `got=${A.breakdown.carbon_total_tco2e_per_t}`,
-      );
-      check(
-        `案 B 聚合值 = 1.05×2.10+0.08+0.33 ≈ ${expectedB.toFixed(4)}(§4.3 對應公式值)`,
-        close(B.breakdown.carbon_total_tco2e_per_t, expectedB),
-        `got=${B.breakdown.carbon_total_tco2e_per_t}`,
-      );
+      for (const c of ['A', 'B'] as const) {
+        const cs = seed.cases[c];
+        const viaFn = computeAggregateBreakdown(yarnTotalIndep, cs.expected_pcf_dyeing, {
+          yarnLossFactor: agg.yarn_loss_factor,
+          knittingKwhPerKg: agg.knitting_electricity_kwh_per_kg,
+          gridTw: ef.grid_tw_kg_per_kwh,
+        });
+        const indepTotal = r4agg(r4agg(yarnTotalIndep * agg.yarn_loss_factor) + r4agg(agg.knitting_electricity_kwh_per_kg * ef.grid_tw_kg_per_kwh) + cs.expected_pcf_dyeing);
+        const got = byCase[c].agg.breakdown.pcf_total;
+        check(
+          `v3:案 ${c} 三段聚合(紗×損耗 + 織布用電 + 染整)= expected_pcf_total(${cs.expected_pcf_total})——API/computeAggregateBreakdown/獨立算式三方一致`,
+          close(got, cs.expected_pcf_total) && close(viaFn.total, cs.expected_pcf_total) && close(indepTotal, cs.expected_pcf_total),
+          `api=${got} fn=${viaFn.total} indep=${indepTotal}`,
+        );
+        check(
+          `v3:案 ${c} 分項一致(pcf_yarn=${agg.expected_pcf_yarn} / pcf_knitting=${agg.expected_pcf_knitting} / pcf_dyeing=${cs.expected_pcf_dyeing})`,
+          close(byCase[c].agg.breakdown.pcf_yarn, agg.expected_pcf_yarn) &&
+            close(byCase[c].agg.breakdown.pcf_knitting, agg.expected_pcf_knitting) &&
+            close(byCase[c].agg.breakdown.pcf_dyeing, cs.expected_pcf_dyeing),
+          JSON.stringify(byCase[c].agg.breakdown),
+        );
+      }
 
-      // (d) precursor_ref 的 id 與 hash 對得上該案上游憑證
+      // (d) precursor_refs 恰兩筆,id/hash 對得上該案兩張外部輸入憑證(v3 檢查 3)
       const sha256Hex = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
-      check('案 A precursor_ref.id 對得上 pcf_upstream-A', A.precursor_ref.id === 'pcf_upstream-A');
-      check('案 A precursor_ref.hash == sha256(上游 sd_jwt)', A.precursor_ref.hash === sha256Hex(byCase.A.upstreamSdJwt));
-      check('案 B precursor_ref.id 對得上 pcf_upstream-B', B.precursor_ref.id === 'pcf_upstream-B');
-      check('案 B precursor_ref.hash == sha256(上游 sd_jwt)', B.precursor_ref.hash === sha256Hex(byCase.B.upstreamSdJwt));
+      for (const c of ['A', 'B'] as const) {
+        const refs = byCase[c].agg.precursor_refs;
+        check(`案 ${c} precursor_refs 恰兩筆(紗 + 染整)`, Array.isArray(refs) && refs.length === 2, JSON.stringify(refs));
+        const yarnRef = refs?.find((r) => r.id === `tc_carbon_upstream-${c}`);
+        const dyeRef = refs?.find((r) => r.id === `pcf_dyeing-${c}`);
+        check(`案 ${c} precursor_refs 之紗參照 hash == sha256(上游 sd_jwt)`, yarnRef?.hash === sha256Hex(byCase[c].upstreamSdJwt), JSON.stringify(yarnRef));
+        check(`案 ${c} precursor_refs 之染整參照 hash == sha256(染整 sd_jwt)`, dyeRef?.hash === sha256Hex(byCase[c].dyeingSdJwt), JSON.stringify(dyeRef));
+      }
 
-      // (e) 上游明細欄位名不出現於 pcf_aggregate 任何層(compact token 字面值 + 已揭露 claims 皆檢查)
-      const upstreamOnlyFieldNames = [
-        'specific_direct_embedded_emissions',
-        'production_route',
-        'specific_indirect_embedded_emissions',
-        'electricity_mix_ref',
-        'installation_unlocode',
-        'primary_data_share',
+      // (e) 上游/染整明細欄位名不出現於 pcf_aggregate 任何層(以 DB 內完整 claims payload 檢查 key)
+      const inputOnlyFieldNames = [
+        'tcShipmentDate',
+        'tcShipmentNo',
+        'inputTcNo',
+        'sellerTeId',
+        'buyerTeId',
+        'tcProductLastProcessorName',
+        'heat_mj_per_kg',
+        'heat_source',
+        'renewable_share',
+        'boiler_efficiency',
       ];
-      // 鴻鋼自持之完整 SD-JWT(credentials 表)不得含任何上游明細欄位名稱(compact token 字面值檢查)。
-      const noLeak = (c: 'A' | 'B') => upstreamOnlyFieldNames.every((k) => !byCase[c].sdJwt.includes(k));
-      check('pcf_aggregate(案 A)不含任何上游明細欄位名稱', noLeak('A'));
-      check('pcf_aggregate(案 B)不含任何上游明細欄位名稱', noLeak('B'));
+      const aggClaimsDb = openDb();
+      const noLeak = (c: 'A' | 'B') => {
+        const row = aggClaimsDb.prepare('SELECT payload_json FROM credentials WHERE id = ?').get(`pcf_aggregate-${c}`) as
+          | { payload_json: string }
+          | undefined;
+        const keys = Object.keys(JSON.parse(row?.payload_json ?? '{}'));
+        return inputOnlyFieldNames.every((k) => !keys.includes(k));
+      };
+      check('pcf_aggregate(案 A)不含任何上游/染整明細欄位名稱', noLeak('A'));
+      check('pcf_aggregate(案 B)不含任何上游/染整明細欄位名稱', noLeak('B'));
+      aggClaimsDb.close();
 
-      // (f) status.status_list.idx/uri 正確,且與 pcf_upstream 之 idx(0/1)不衝突(F1 後改讀回應之 status 欄)
+      // (f) status.status_list.idx/uri 正確,且與 tc_carbon_upstream 之 idx(0/1)不衝突(F1 後改讀回應之 status 欄)
       check(
         '案 A pcf_aggregate status.status_list.idx=2、uri 指向 /status/credentials',
         A.status?.idx === 2 && A.status?.uri === statusListUri('credentials'),
         JSON.stringify(A.status),
       );
-      check('案 B pcf_aggregate status.status_list.idx=3(與案 A、pcf_upstream 之 0/1 皆不衝突)', B.status?.idx === 3, JSON.stringify(B.status));
+      check('案 B pcf_aggregate status.status_list.idx=3(與案 A、tc_carbon_upstream 之 0/1 皆不衝突)', B.status?.idx === 3, JSON.stringify(B.status));
 
       // (g) 案 A 與案 B 聚合回傳值不同(支撐「換 seed 圖跟著變」的 DoD,藍圖:159)
       check(
         '案 A 與案 B 聚合回傳值不同(換 seed 圖跟著變)',
-        A.breakdown.carbon_total_tco2e_per_t !== B.breakdown.carbon_total_tco2e_per_t,
-        `A=${A.breakdown.carbon_total_tco2e_per_t} B=${B.breakdown.carbon_total_tco2e_per_t}`,
+        A.breakdown.pcf_total !== B.breakdown.pcf_total,
+        `A=${A.breakdown.pcf_total} B=${B.breakdown.pcf_total}`,
       );
 
       // L3 修正:合約碳排門檻改由後端(data/seed.json transaction.contract_carbon_max)提供,
@@ -527,7 +643,7 @@ async function main() {
         `got=${A.issued_at} expected=${agg.issued_at}`,
       );
       check(
-        `pcf_aggregate issued_at(${A.issued_at})晚於上游 pcf_upstream issued_at(${byCase.A.upstreamIssuedAt})`,
+        `pcf_aggregate issued_at(${A.issued_at})晚於上游 tc_carbon_upstream issued_at(${byCase.A.upstreamIssuedAt})`,
         Date.parse(`${A.issued_at}T00:00:00Z`) > Date.parse(`${byCase.A.upstreamIssuedAt}T00:00:00Z`),
       );
       check(
@@ -555,10 +671,10 @@ async function main() {
       //      版本(reused=true,不得覆寫、不得回傳自己剛簽的 token)。此區塊經 mutation testing 驗證
       //      (退回舊版無條件 upsert 語意會使其翻紅,詳見交付報告)。
       const primDb = openDb();
-      primDb.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_upstream-A');
+      primDb.prepare('DELETE FROM credentials WHERE id = ?').run('tc_carbon_upstream-A');
       const raceBaseRec = {
-        id: 'pcf_upstream-A',
-        type: 'pcf_upstream',
+        id: 'tc_carbon_upstream-A',
+        type: 'tc_carbon_upstream',
         caseId: 'A',
         issuerParty: 'yarn',
         holderParty: 'fab',
@@ -581,7 +697,7 @@ async function main() {
         raceSecond.reused === true && raceSecond.row.sd_jwt === 'race-token-first',
         `reused=${raceSecond.reused} row.sd_jwt=${raceSecond.row.sd_jwt}`,
       );
-      const primRows = primDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_upstream-A') as { sd_jwt: string }[];
+      const primRows = primDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('tc_carbon_upstream-A') as { sd_jwt: string }[];
       check(
         '發現 1(併發競態,store.ts 原子語意):credentials 表該案只有一列,且內容為先到者版本(未被後到者覆寫)',
         primRows.length === 1 && primRows[0].sd_jwt === 'race-token-first',
@@ -594,7 +710,7 @@ async function main() {
       //     token(SD-JWT 含隨機 disclosure 鹽),兩份回應的 sd_jwt 會不同——用兩個呼叫者「各自看到
       //     的回應」互相比對(不只是跟 DB 比),不受哪一方先簽/後寫的執行順序影響,才能可靠抓到回歸。
       const raceDb = openDb();
-      raceDb.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_upstream-A');
+      raceDb.prepare('DELETE FROM credentials WHERE id = ?').run('tc_carbon_upstream-A');
       raceDb.close();
 
       const [raceIssue1, raceIssue2] = await Promise.all([
@@ -620,47 +736,56 @@ async function main() {
       );
 
       const raceDbCheck = openDb();
-      const upstreamRowsA = raceDbCheck.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_upstream-A') as { sd_jwt: string }[];
+      const upstreamRowsA = raceDbCheck.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('tc_carbon_upstream-A') as { sd_jwt: string }[];
       raceDbCheck.close();
       check(
-        '發現 1(併發競態):credentials 表 pcf_upstream-A 該案只有一列',
+        '發現 1(併發競態):credentials 表 tc_carbon_upstream-A 該案只有一列',
         upstreamRowsA.length === 1,
         `rows=${upstreamRowsA.length}`,
       );
 
-      // (b) 發現 1(併發競態,server/creds/pcfAggregate.ts ensureUpstreamCredential 呼叫路徑):
-      //     清空案 B 上游/聚合列,併發打兩個 /api/aggregate(同案 B)。同理,用兩份聚合回應的
-      //     precursor_ref.hash 互相比對(不只是跟 DB 比)——同一案只能有一個合法上游,兩份聚合
-      //     若引用不同雜湊,代表兩個呼叫者各自簽了一份不同的上游 token,信任鏈已經分岔。
+      // (b) 發現 1(併發競態,server/creds/pcfAggregate.ts ensureInputs 呼叫路徑):
+      //     清空案 B 兩張輸入/聚合列,併發打兩個 /api/aggregate(同案 B)。同理,用兩份聚合回應的
+      //     precursor_refs hash 互相比對(不只是跟 DB 比)——同一案只能有一組合法輸入,兩份聚合
+      //     若引用不同雜湊,代表兩個呼叫者各自簽了不同的輸入 token,信任鏈已經分岔。
       const raceDb2 = openDb();
-      raceDb2.prepare('DELETE FROM credentials WHERE id IN (?, ?)').run('pcf_upstream-B', 'pcf_aggregate-B');
+      raceDb2.prepare('DELETE FROM credentials WHERE id IN (?, ?, ?)').run('tc_carbon_upstream-B', 'pcf_dyeing-B', 'pcf_aggregate-B');
       raceDb2.close();
 
       const [raceAgg1, raceAgg2] = await Promise.all([
         app3.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'B' } }),
         app3.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'B' } }),
       ]);
-      const aggBody1 = raceAgg1.json() as { precursor_ref?: { hash?: string } };
-      const aggBody2 = raceAgg2.json() as { precursor_ref?: { hash?: string } };
+      type RaceAggBody = { precursor_refs?: Array<{ id: string; hash: string }> };
+      const aggBody1 = raceAgg1.json() as RaceAggBody;
+      const aggBody2 = raceAgg2.json() as RaceAggBody;
+      const refHash = (b: RaceAggBody, id: string) => b.precursor_refs?.find((r) => r.id === id)?.hash;
       check(
         '發現 1(併發競態):併發兩個 POST /api/aggregate(案 B)皆回 200',
         raceAgg1.statusCode === 200 && raceAgg2.statusCode === 200,
         `status1=${raceAgg1.statusCode} status2=${raceAgg2.statusCode}`,
       );
       check(
-        '發現 1(併發競態):兩份聚合回應的 precursor_ref.hash 相同(同一案只有一個合法上游,不得分岔)',
-        !!aggBody1.precursor_ref?.hash && aggBody1.precursor_ref?.hash === aggBody2.precursor_ref?.hash,
-        `hash1=${aggBody1.precursor_ref?.hash?.slice(0, 12)} hash2=${aggBody2.precursor_ref?.hash?.slice(0, 12)}`,
+        '發現 1(併發競態):兩份聚合回應的 precursor_refs hash 逐筆相同(同一案只有一組合法輸入,不得分岔)',
+        !!refHash(aggBody1, 'tc_carbon_upstream-B') &&
+          refHash(aggBody1, 'tc_carbon_upstream-B') === refHash(aggBody2, 'tc_carbon_upstream-B') &&
+          !!refHash(aggBody1, 'pcf_dyeing-B') &&
+          refHash(aggBody1, 'pcf_dyeing-B') === refHash(aggBody2, 'pcf_dyeing-B'),
+        `up1=${refHash(aggBody1, 'tc_carbon_upstream-B')?.slice(0, 12)} up2=${refHash(aggBody2, 'tc_carbon_upstream-B')?.slice(0, 12)}`,
       );
 
       const raceDbCheck2 = openDb();
-      const upstreamRowsB = raceDbCheck2.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_upstream-B') as { sd_jwt: string }[];
+      const upstreamRowsB = raceDbCheck2.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('tc_carbon_upstream-B') as { sd_jwt: string }[];
+      const dyeingRowsB = raceDbCheck2.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').all('pcf_dyeing-B') as { sd_jwt: string }[];
       raceDbCheck2.close();
       const sha256HexRace = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
       check(
-        '發現 1(併發競態):credentials 表 pcf_upstream-B 該案只有一列,且聚合 precursor_ref.hash === sha256(落庫上游 sd_jwt)',
-        upstreamRowsB.length === 1 && aggBody1.precursor_ref?.hash === sha256HexRace(upstreamRowsB[0]?.sd_jwt ?? ''),
-        `rows=${upstreamRowsB.length} dbHash=${upstreamRowsB[0] ? sha256HexRace(upstreamRowsB[0].sd_jwt).slice(0, 12) : 'N/A'} aggHash=${aggBody1.precursor_ref?.hash?.slice(0, 12)}`,
+        '發現 1(併發競態):credentials 表兩張輸入各只有一列,且聚合 precursor_refs hash === sha256(落庫輸入 sd_jwt)',
+        upstreamRowsB.length === 1 &&
+          dyeingRowsB.length === 1 &&
+          refHash(aggBody1, 'tc_carbon_upstream-B') === sha256HexRace(upstreamRowsB[0]?.sd_jwt ?? '') &&
+          refHash(aggBody1, 'pcf_dyeing-B') === sha256HexRace(dyeingRowsB[0]?.sd_jwt ?? ''),
+        `upRows=${upstreamRowsB.length} dyeRows=${dyeingRowsB.length}`,
       );
 
       // (b) 發現 2(case_id 顯式驗證):缺值與打錯字一律 400 + INVALID_CASE_ID,不得靜默塌成 'A' 真簽憑證。
@@ -707,8 +832,8 @@ async function main() {
         `kid=${decodeProtectedHeader(m2MandateJwt).kid} expected=${manifest.brand_cso.aid}`,
       );
       check(
-        '遺留(b)鎖:M2 allowed_claims 不含 precursor_contribution_tco2e_per_t',
-        !m2Summary.allowed_claims.includes('precursor_contribution_tco2e_per_t'),
+        '遺留(b)鎖:M2 allowed_claims 不含 pcf_yarn',
+        !m2Summary.allowed_claims.includes('pcf_yarn'),
         JSON.stringify(m2Summary.allowed_claims),
       );
       check(
@@ -814,13 +939,13 @@ async function main() {
       // 逐欄核對「在/不在」:presentation 只含 M2.allowed_claims 六欄(以 verifyCompactSdJwt 解出已揭露 payload)。
       const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
       const presVerify = await verifyCompactSdJwt(permitPresentation, resolvePublicKeyFromManifest(manifest));
-      check('presentation 可用鴻鋼公鑰驗章通過', presVerify.ok === true, JSON.stringify({ ok: presVerify.ok, error: presVerify.error }));
+      check('presentation 可用FAB公鑰驗章通過', presVerify.ok === true, JSON.stringify({ ok: presVerify.ok, error: presVerify.error }));
       const presPayload = (presVerify.payload ?? {}) as Record<string, unknown>;
       const allInAllowed = m2Summary.allowed_claims.every((claim) => claim in presPayload);
       check(`presentation 含全部允許欄位(${m2Summary.allowed_claims.length} 欄逐一核對「在」)`, allInAllowed, JSON.stringify(Object.keys(presPayload)));
       check(
-        '遺留(b)鎖:presentation 不含 precursor_contribution_tco2e_per_t(逐欄核對「不在」)',
-        !('precursor_contribution_tco2e_per_t' in presPayload),
+        '遺留(b)鎖:presentation 不含 pcf_yarn(逐欄核對「不在」)',
+        !('pcf_yarn' in presPayload),
         JSON.stringify(Object.keys(presPayload)),
       );
 
@@ -838,19 +963,19 @@ async function main() {
     }
   }
 
-  // 14) 幕 4 越界攔截 DENY(加碼索取 machine_energy)——Cedar P2 forbid,零欄位外洩。
+  // 14) 幕 4 越界攔截 DENY(加碼索取 plant_total_output 全廠產量)——Cedar P2 forbid,零欄位外洩。
   {
     const app14 = buildServer();
     try {
       const brandWorkload = loadWorkloadKey('brand-workload');
-      const overRequestClaims = [...m2Summary.allowed_claims, 'machine_energy'];
+      const overRequestClaims = [...m2Summary.allowed_claims, 'plant_total_output'];
       const requestJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', overRequestClaims, randomNonce());
 
       const auditBeforeRes = await app14.inject({ method: 'GET', url: '/api/audit?after=0' });
       const auditCountBefore = (auditBeforeRes.json() as unknown[]).length;
 
       const res = await app14.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: requestJws } });
-      check('幕 4:加碼索取 machine_energy → 403', res.statusCode === 403, `status=${res.statusCode} body=${res.body}`);
+      check('幕 4:加碼索取 plant_total_output → 403', res.statusCode === 403, `status=${res.statusCode} body=${res.body}`);
       const body = res.json() as Record<string, unknown>;
       check(
         '理由碼 POLICY_P2_CONFIDENTIAL、policy_id=P2',
@@ -859,7 +984,7 @@ async function main() {
       );
       check(
         '零欄位外洩:回應無 presentation 欄位,亦不含任何 pcf_aggregate 欄位值',
-        !('presentation' in body) && !('carbon_total_tco2e_per_t' in body),
+        !('presentation' in body) && !('pcf_total' in body),
         JSON.stringify(body),
       );
 
@@ -972,7 +1097,7 @@ async function main() {
     } else {
       const overBroadFrame: Record<string, boolean> = {};
       for (const claim of m2Summary.allowed_claims) if (isSelectableDisclosure(claim)) overBroadFrame[claim] = true;
-      overBroadFrame.precursor_contribution_tco2e_per_t = true; // 故意多挑一個不在 allowed_claims 內的 disclosure
+      overBroadFrame.pcf_yarn = true; // 故意多挑一個不在 allowed_claims 內的 disclosure
       // 以低階入口 presentRawDisclosures 構造(繞過 L4 的 presenter deny-list),模擬「閘道被繞過/
       // 惡意 presenter」——正是要證明即使前面兩道防線失效,Brand 端雙向約束仍會攔下。
       const overBroadPresentation = await presentRawDisclosures(aggRow.sd_jwt, overBroadFrame as never);
@@ -985,7 +1110,7 @@ async function main() {
       );
     }
 
-    // (d) 遺留(a)鎖:錯誤角色簽發(vct 宣稱 pcf_aggregate,實際由 Thép Việt LE 鑰簽發,非鴻鋼)→ 拒絕。
+    // (d) 遺留(a)鎖:錯誤角色簽發(vct 宣稱 pcf_aggregate,實際由 YARN LE 鑰簽發,非FAB)→ 拒絕。
     const yarnKey = loadSandboxKey('yarn');
     const nowSec = Math.floor(Date.now() / 1000);
     const forgedPayload = {
@@ -995,17 +1120,20 @@ async function main() {
       nbf: nowSec,
       exp: nowSec + 3600,
       status: { status_list: { idx: 2, uri: statusListUri('credentials') } },
-      cn_code: '7318.15',
-      precursor_ref: { id: 'pcf_upstream-A', hash: '0'.repeat(64) },
-      carbon_total_tco2e_per_t: 1.5125,
+      hs6: '6006.32',
+      precursor_refs: [
+        { id: 'tc_carbon_upstream-A', hash: '0'.repeat(64) },
+        { id: 'pcf_dyeing-A', hash: '1'.repeat(64) },
+      ],
+      pcf_total: 1.5125,
     };
-    const forgedFrame = { carbon_total_tco2e_per_t: true } as unknown as DisclosureFrame<SdJwtVcPayload>;
+    const forgedFrame = { pcf_total: true } as unknown as DisclosureFrame<SdJwtVcPayload>;
     const forgedInstance = buildIssuerInstance(yarnKey);
     const forgedSdJwt = await forgedInstance.issue(forgedPayload as unknown as SdJwtVcPayload, forgedFrame, { header: { kid: yarnKey.kid } });
     const forgedResult = await verifyPresentation({ presentationSdJwt: forgedSdJwt, mandateJwt: m2MandateJwt, manifest });
     const vctCheck = forgedResult.checks.find((c) => c.name.includes('vct'));
     check(
-      '遺留(a)鎖:pcf_aggregate 由 Thép Việt LE 鑰(非鴻鋼)簽發 → vct↔簽發者 AID 綁定檢查失敗(VCT_ISSUER_UNAUTHORIZED)',
+      '遺留(a)鎖:pcf_aggregate 由 YARN LE 鑰(非FAB)簽發 → vct↔簽發者 AID 綁定檢查失敗(VCT_ISSUER_UNAUTHORIZED)',
       forgedResult.ok === false && vctCheck?.ok === false && vctCheck?.reasonCode === CODES.VCT_ISSUER_UNAUTHORIZED,
       JSON.stringify(vctCheck),
     );
@@ -1083,7 +1211,7 @@ async function main() {
   //     兩邊拿到同一 token(HTTP 層 Promise.all 測項無法可靠重現交錯執行,見既有 (a0) 區塊註解)。
   {
     const raceDb = openDb();
-    raceDb.prepare('DELETE FROM credentials WHERE id IN (?, ?)').run('pcf_upstream-A', 'pcf_aggregate-A');
+    raceDb.prepare('DELETE FROM credentials WHERE id IN (?, ?)').run('tc_carbon_upstream-A', 'pcf_aggregate-A');
     raceDb.close();
 
     const dbForCall1 = openDb();
@@ -1190,25 +1318,28 @@ async function main() {
 
     try {
       // ---------- C1:vct ↔ 簽發者 AID 綁定必須以「實際驗章鑰」為準 ----------
-      // (a) 不誠實偽造:攻擊者用 Thép Việt LE 鑰**實際簽章**(header.kid = Thép Việt AID),
-      //     payload.iss 卻填鴻鋼 LE AID。舊版綁定檢查只比對 payload.iss、取鑰卻走 header.kid,
+      // (a) 不誠實偽造:攻擊者用 YARN LE 鑰**實際簽章**(header.kid = YARN AID),
+      //     payload.iss 卻填FAB LE AID。舊版綁定檢查只比對 payload.iss、取鑰卻走 header.kid,
       //     兩者從不互相校驗 → 偽造的 carbon_total 會被判 valid=true(PoC 已證實)。
       const attackerKey = loadSandboxKey('yarn');
       const c1Now = Math.floor(Date.now() / 1000);
       const forgedClaims = {
         vct: PCF_AGGREGATE_VCT,
-        iss: manifest.fab.aid, // 宣稱鴻鋼簽的
+        iss: manifest.fab.aid, // 宣稱FAB簽的
         iat: c1Now,
         nbf: c1Now,
         exp: c1Now + 3600,
         status: { status_list: { idx: 2, uri: statusListUri('credentials') } },
-        cn_code: '7318.15',
-        precursor_ref: { id: 'pcf_upstream-A', hash: '0'.repeat(64) },
-        carbon_total_tco2e_per_t: 0.0001, // 偽造的超低碳排
-        carbon_price_paid_origin: '(偽造)',
+        hs6: '6006.32',
+        precursor_refs: [
+        { id: 'tc_carbon_upstream-A', hash: '0'.repeat(64) },
+        { id: 'pcf_dyeing-A', hash: '1'.repeat(64) },
+      ],
+        pcf_total: 0.0001, // 偽造的超低碳排
+        pcf_period: '2026-05',
       };
       const forgedFrame23 = {
-        _sd: ['carbon_total_tco2e_per_t', 'carbon_price_paid_origin'],
+        _sd: ['pcf_total', 'pcf_period'],
       } as unknown as DisclosureFrame<SdJwtVcPayload>;
       const dishonestSdJwt = await buildIssuerInstance(attackerKey).issue(forgedClaims as unknown as SdJwtVcPayload, forgedFrame23, {
         header: { kid: attackerKey.kid }, // 誠實標示自己的鑰(簽章驗得過),只在 payload 說謊
@@ -1217,7 +1348,7 @@ async function main() {
       const dishonestSigCheck = dishonestResult.checks[0];
       const dishonestVctCheck = dishonestResult.checks.find((c) => c.name.includes('vct'));
       check(
-        'C1:header.kid(實際簽章者 Thép Việt)≠ payload.iss(宣稱鴻鋼)之偽造 pcf_aggregate → VCT_ISSUER_UNAUTHORIZED',
+        'C1:header.kid(實際簽章者 YARN)≠ payload.iss(宣稱FAB)之偽造 pcf_aggregate → VCT_ISSUER_UNAUTHORIZED',
         dishonestResult.ok === false && dishonestVctCheck?.ok === false && dishonestVctCheck?.reasonCode === CODES.VCT_ISSUER_UNAUTHORIZED,
         JSON.stringify(dishonestVctCheck),
       );
@@ -1232,14 +1363,14 @@ async function main() {
         JSON.stringify(dishonestResult.checks.map((c) => [c.name, c.ok])),
       );
 
-      // (b) kid 冒充:header.kid 填鴻鋼 AID、實際仍用 Thép Việt 鑰簽 → 第 1 項簽章驗證即失敗
-      //     (取鑰依 kid,解出鴻鋼公鑰,驗不過攻擊者的簽章)。
+      // (b) kid 冒充:header.kid 填FAB AID、實際仍用 YARN 鑰簽 → 第 1 項簽章驗證即失敗
+      //     (取鑰依 kid,解出FAB公鑰,驗不過攻擊者的簽章)。
       const kidSpoofSdJwt = await buildIssuerInstance(attackerKey).issue(forgedClaims as unknown as SdJwtVcPayload, forgedFrame23, {
         header: { kid: manifest.fab.aid },
       });
       const kidSpoofResult = await verifyPresentation({ presentationSdJwt: kidSpoofSdJwt, mandateJwt: m2MandateJwt, manifest });
       check(
-        'C1:header.kid 冒充鴻鋼、實際用 Thép Việt 鑰簽 → 簽章檢查失敗(CREDENTIAL_SIG_INVALID)',
+        'C1:header.kid 冒充FAB、實際用 YARN 鑰簽 → 簽章檢查失敗(CREDENTIAL_SIG_INVALID)',
         kidSpoofResult.ok === false && kidSpoofResult.checks[0]?.ok === false && kidSpoofResult.checks[0]?.reasonCode === CODES.CREDENTIAL_SIG_INVALID,
         JSON.stringify(kidSpoofResult.checks[0]),
       );
@@ -1247,7 +1378,7 @@ async function main() {
       // ---------- H2:最小揭露不得有算術洩漏 ----------
       const presVerify23 = await verifyCompactSdJwt(permitPresentation, resolvePublicKeyFromManifest(manifest));
       const presPayload23 = (presVerify23.payload ?? {}) as Record<string, unknown>;
-      const emissionFieldNames = ['carbon_total_tco2e_per_t', ...NEVER_DISCLOSABLE_CLAIMS];
+      const emissionFieldNames = ['pcf_total', ...NEVER_DISCLOSABLE_CLAIMS];
       const disclosedEmissionFields = emissionFieldNames.filter((f) => f in presPayload23);
       check(
         'H2:PERMIT presentation 內的排放數字欄位至多 1 個(只有聚合值,無法兩兩相減)',
@@ -1269,9 +1400,17 @@ async function main() {
         return out;
       };
       const disclosedNumbers = collectNumbers(presPayload23);
-      const upstreamTotal = seedData.cases.A.direct + seedData.cases.A.indirect;
-      const precursorContribution = seedData.aggregate_defaults.precursor_input_ratio_t_per_t * upstreamTotal;
-      const reconstructionTargets = [precursorContribution, upstreamTotal];
+      // v3 還原目標:三段分項(pcf_yarn / pcf_knitting / pcf_dyeing)——presentation 內任意 ± 組合
+      // 都不得等於任一分項(等於即代表布廠自家織布強度或外包段可被反推)。
+      const h2r4 = (n: number) => Math.round(n * 10000) / 10000;
+      const h2YarnTotal = h2r4(
+        seedData.upstream_defaults.pcf_direct + h2r4(seedData.upstream_defaults.electricity_kwh_per_kg * seedData.emission_factor_table.grid_vn_kg_per_kwh),
+      );
+      const reconstructionTargets = [
+        h2r4(h2YarnTotal * seedData.aggregate_defaults.yarn_loss_factor),
+        h2r4(seedData.aggregate_defaults.knitting_electricity_kwh_per_kg * seedData.emission_factor_table.grid_tw_kg_per_kwh),
+        seedData.cases.A.expected_pcf_dyeing,
+      ];
       let reconstructed: string | null = null;
       const combos = 3 ** disclosedNumbers.length;
       for (let mask = 1; mask < combos && !reconstructed; mask++) {
@@ -1298,19 +1437,36 @@ async function main() {
         }
       }
       check(
-        `H2 還原攻擊:揭露數值(${disclosedNumbers.length} 個)的任意 ± 組合都無法還原 precursor_contribution(${precursorContribution})或上游合計(${upstreamTotal})`,
+        `H2 還原攻擊:揭露數值(${disclosedNumbers.length} 個)的任意 ± 組合都無法還原任一分項(${reconstructionTargets.join(' / ')})`,
         reconstructed === null,
         `命中組合:${reconstructed}`,
+      );
+
+      // v3 檢查 4(補):對三個 NEVER_DISCLOSABLE 分項各發 disclose 請求 → CLAIM_NOT_IN_MANDATE(政策層);
+      // presenter 層硬拒已由 L4 區塊覆蓋;brand_allocation_share 明文不得出現於 presentation(僅 *_hash)。
+      for (const denied of NEVER_DISCLOSABLE_CLAIMS) {
+        const deniedJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', [...m2Summary.allowed_claims, denied], randomNonce());
+        const deniedRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: deniedJws } });
+        check(
+          `v3 H2:disclose 索取分項 ${denied} → 403 CLAIM_NOT_IN_MANDATE`,
+          deniedRes.statusCode === 403 && (deniedRes.json() as { reason_code?: string }).reason_code === CODES.CLAIM_NOT_IN_MANDATE,
+          `status=${deniedRes.statusCode} body=${deniedRes.body.slice(0, 160)}`,
+        );
+      }
+      check(
+        'v3 H2:brand_allocation_share 不出現於 presentation 明文(僅 brand_allocation_share_hash commitment)',
+        !('brand_allocation_share' in presPayload23) && typeof presPayload23.brand_allocation_share_hash === 'string',
+        JSON.stringify(Object.keys(presPayload23)),
       );
 
       // ---------- M2:mandate 必須由預期 ECR 角色簽發 ----------
       const mandatePayloadOriginal = decodeJoseJwt(m2MandateJwt) as Record<string, unknown>;
       const cfoKey = loadSandboxKey('fab_cfo');
-      // (a) 換角色簽(鴻鋼財務主管 ECR 冒簽 M2):kid/iss 都誠實寫自己 → 必須因「非預期角色」被拒。
+      // (a) 換角色簽(FAB財務主管 ECR 冒簽 M2):kid/iss 都誠實寫自己 → 必須因「非預期角色」被拒。
       const wrongRoleMandate = await new SignJWT({ ...mandatePayloadOriginal, iss: cfoKey.kid })
         .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: cfoKey.kid })
         .sign(cfoKey.privateKey);
-      // (b) kid 冒充 Brand 永續長、實際用鴻鋼財務主管鑰簽 → 簽章驗證失敗。
+      // (b) kid 冒充 Brand 永續長、實際用FAB財務主管鑰簽 → 簽章驗證失敗。
       const kidSpoofMandate = await new SignJWT({ ...mandatePayloadOriginal })
         .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: manifest.brand_cso.aid })
         .sign(cfoKey.privateKey);
@@ -1319,7 +1475,7 @@ async function main() {
       const originalM2Token = (mandateDb23.prepare('SELECT token FROM mandates WHERE id = ?').get('M2') as { token: string }).token;
       mandateDb23.close();
       for (const [label, badToken] of [
-        ['非預期角色(鴻鋼財務主管 ECR)簽發 M2', wrongRoleMandate],
+        ['非預期角色(FAB財務主管 ECR)簽發 M2', wrongRoleMandate],
         ['kid 冒充 Brand 永續長、實際用他方鑰簽', kidSpoofMandate],
       ] as const) {
         const swapDb = openDb();
@@ -1410,7 +1566,7 @@ async function main() {
           String(caught),
         );
       }
-      const allowedOnlyPresentation = await presentSelectedDisclosures(aggSdJwt23, { carbon_total_tco2e_per_t: true } as never);
+      const allowedOnlyPresentation = await presentSelectedDisclosures(aggSdJwt23, { pcf_total: true } as never);
       check('L4 對照組:只挑允許欄位仍可正常出示', typeof allowedOnlyPresentation === 'string' && allowedOnlyPresentation.length > 0);
 
       // ---------- H3:Brand 端 vLEI 鏈查驗只讀 data/vlei/(不再讀 .vlei/ 私鑰種子)----------
@@ -1582,15 +1738,18 @@ async function main() {
         nbf: f8Now,
         exp: f8Now + 3600,
         status: { status_list: { idx: 2, uri: statusListUri('credentials') } },
-        cn_code: '7318.15',
-        precursor_ref: { id: 'pcf_upstream-A', hash: '0'.repeat(64) },
-        carbon_total_tco2e_per_t: 1.5125,
-        carbon_price_paid_origin: '台灣碳費',
-        // 授權簽發者(鴻鋼)新增並揭露的一個 mandate 未列 claim——舊版硬編 PCF_AGGREGATE_SD_FIELDS 不含它 → fail-open。
+        hs6: '6006.32',
+        precursor_refs: [
+        { id: 'tc_carbon_upstream-A', hash: '0'.repeat(64) },
+        { id: 'pcf_dyeing-A', hash: '1'.repeat(64) },
+      ],
+        pcf_total: 1.5125,
+        pcf_period: '2026-05',
+        // 授權簽發者(FAB)新增並揭露的一個 mandate 未列 claim——舊版硬編 PCF_AGGREGATE_SD_FIELDS 不含它 → fail-open。
         unexpected_extra_claim: 'schema-evolution-injected',
       };
       const extraFrame = {
-        _sd: ['carbon_total_tco2e_per_t', 'carbon_price_paid_origin', 'unexpected_extra_claim'],
+        _sd: ['pcf_total', 'pcf_period', 'unexpected_extra_claim'],
       } as unknown as DisclosureFrame<SdJwtVcPayload>;
       const extraSdJwt = await buildIssuerInstance(fabKey).issue(extraPayload as unknown as SdJwtVcPayload, extraFrame, { header: { kid: fabKey.kid } });
       const f8Result = await verifyPresentation({ presentationSdJwt: extraSdJwt, mandateJwt: m2MandateJwt, manifest, receipt: permitReceipt });
@@ -1720,13 +1879,16 @@ async function main() {
         nbf: past,
         exp: past + 3600,
         status: { status_list: { idx: 2, uri: statusListUri('credentials') } },
-        cn_code: '7318.15',
-        precursor_ref: { id: 'pcf_upstream-A', hash: '0'.repeat(64) },
-        carbon_total_tco2e_per_t: 1.5125,
-        carbon_price_paid_origin: '台灣碳費',
+        hs6: '6006.32',
+        precursor_refs: [
+        { id: 'tc_carbon_upstream-A', hash: '0'.repeat(64) },
+        { id: 'pcf_dyeing-A', hash: '1'.repeat(64) },
+      ],
+        pcf_total: 1.5125,
+        pcf_period: '2026-05',
       };
       const expiredFrame = {
-        _sd: ['carbon_total_tco2e_per_t', 'carbon_price_paid_origin'],
+        _sd: ['pcf_total', 'pcf_period'],
       } as unknown as DisclosureFrame<SdJwtVcPayload>;
       const expiredSdJwt = await buildIssuerInstance(fabKey).issue(expiredPayload as unknown as SdJwtVcPayload, expiredFrame, { header: { kid: fabKey.kid } });
       const swapAggDb = openDb();
@@ -1752,6 +1914,58 @@ async function main() {
       check('F3 對照組:未撤銷、未過期的 aggregate → 正常 PERMIT', okRes.statusCode === 200, `status=${okRes.statusCode} body=${okRes.body.slice(0, 160)}`);
     } finally {
       await app24.close();
+    }
+  }
+
+  // 25) v3 檢查 6:Cedar 整數單位(kgCO₂e/kg × 1000 → gCO₂e/kg;Codex 審查定案)——
+  //     mandate 資料欄位維持 9.5,政策比較一律整數 g;A 7925 ≤ 9500 過、B 10899 不過。
+  //     P3 authorize 於 Phase 3 接上,此處先鎖換算約定與政策欄位名。
+  {
+    const seedV3 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8'));
+    const toG = (kg: number) => Math.round(kg * 1000);
+    check(
+      'v3 Cedar 單位:seed contract_carbon_max_g == 9500 且 == round(contract_carbon_max × 1000)',
+      seedV3.transaction.contract_carbon_max_g === 9500 && toG(seedV3.transaction.contract_carbon_max) === 9500,
+      `g=${seedV3.transaction.contract_carbon_max_g} kg=${seedV3.transaction.contract_carbon_max}`,
+    );
+    const aG = toG(seedV3.cases.A.expected_pcf_total);
+    const bG = toG(seedV3.cases.B.expected_pcf_total);
+    check('v3 Cedar 單位:案 A carbon_total_g == 7925 且 ≤ 9500(過門檻)', aG === 7925 && aG <= 9500, `aG=${aG}`);
+    check('v3 Cedar 單位:案 B carbon_total_g == 10899 且 > 9500(不過門檻)', bG === 10899 && bG > 9500, `bG=${bG}`);
+    const p3Text = fs.readFileSync(path.join(ROOT, 'policies', 'p3.cedar'), 'utf-8');
+    check(
+      'v3 Cedar 單位:p3.cedar 以 carbon_total_g <= principal.mandate.carbon_max_g 比較(整數 g,不用浮點 kg)',
+      p3Text.includes('context.carbon_total_g <= principal.mandate.carbon_max_g') && !p3Text.includes('carbon_max_kg'),
+    );
+  }
+
+  // 26) v3 檢查 3(補):外部輸入憑證消費前驗章失敗路徑 → CREDENTIAL_SIG_INVALID(不得跳過驗章)。
+  {
+    const app26 = buildServer();
+    try {
+      for (const inputId of ['tc_carbon_upstream-A', 'pcf_dyeing-A'] as const) {
+        const vDb = openDb();
+        const orig = (vDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get(inputId) as { sd_jwt: string }).sd_jwt;
+        vDb.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(tamperPayloadByte(orig), inputId);
+        vDb.close();
+        try {
+          const res = await app26.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'A' } });
+          check(
+            `v3:${inputId} 遭竄改後聚合 → 502 CREDENTIAL_SIG_INVALID(消費前驗章擋下,不得跳過)`,
+            res.statusCode === 502 && (res.json() as { reason_code?: string }).reason_code === CODES.CREDENTIAL_SIG_INVALID,
+            `status=${res.statusCode} body=${res.body.slice(0, 160)}`,
+          );
+        } finally {
+          const rDb = openDb();
+          rDb.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(orig, inputId);
+          rDb.close();
+        }
+      }
+      // 對照組:還原後聚合恢復 200。
+      const okRes = await app26.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'A' } });
+      check('v3 對照組:輸入憑證還原後聚合恢復 200', okRes.statusCode === 200, `status=${okRes.statusCode}`);
+    } finally {
+      await app26.close();
     }
   }
 

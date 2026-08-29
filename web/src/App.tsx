@@ -35,9 +35,9 @@ export interface DiscloseEvent {
 }
 
 const TABS = [
-  { id: 'yarn', label: '越南廠' },
-  { id: 'gateway', label: '鴻鋼閘道' },
-  { id: 'brand', label: 'Brand Agent' },
+  { id: 'yarn', label: '紗廠 Sợi Xanh Việt(簽發)' },
+  { id: 'gateway', label: '誠紡閘道(聚合 · Cedar)' },
+  { id: 'brand', label: 'Nordlicht 品牌 Agent(M2 · 查驗)' },
   { id: 'audit', label: '稽核與撤銷' },
 ] as const;
 

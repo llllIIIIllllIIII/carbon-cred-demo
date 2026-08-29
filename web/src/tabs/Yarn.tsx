@@ -23,9 +23,10 @@ interface VerifyResponse {
   reason_code?: string;
 }
 
+/** A/B 兩案紗憑證內容相同(差異只在下游 pcf_dyeing 的燃料/綠電比)——此處僅切換要簽發的批次記錄。 */
 const CASE_LABELS: Record<CaseId, string> = {
-  A: '案 A · EAF 電弧爐(direct 0.42 tCO2e/t)',
-  B: '案 B · BF-BOF 高爐轉爐(direct 1.98 tCO2e/t)',
+  A: '案 A · rPET DTY 長絲紗(RCS 100)· 3,000 kg · VN',
+  B: '案 B · rPET DTY 長絲紗(RCS 100)· 3,000 kg · VN(與 A 同批;差異僅見於下游染整)',
 };
 
 /** L1 修正:理由碼對應之繁中說明,竄改示範失敗時明確顯示「簽章不符」而非含糊訊息。 */
@@ -40,7 +41,7 @@ function describeVerifyFailure(reasonCode: string | undefined, error: string | u
   return `✗ 驗證失敗——${label}${error ? `(${error})` : ''}`;
 }
 
-/** Tab 1 · 越南廠簽發端主控台(幕 1:簽發 pcf_upstream)。 */
+/** Tab 1 · 越南紗廠簽發端主控台(幕 1:簽發 tc_carbon_upstream)。 */
 export function Yarn({ manifest }: { manifest: Manifest | null }) {
   const [caseId, setCaseId] = useState<CaseId>('A');
   const [issuance, setIssuance] = useState<IssueResponse | null>(null);
@@ -98,11 +99,12 @@ export function Yarn({ manifest }: { manifest: Manifest | null }) {
 
   return (
     <section>
-      <LeiBadge role={manifest?.yarn} fallback="Thép Việt Wire Co." />
-      <h2>越南廠 · 簽發端主控台</h2>
+      <LeiBadge role={manifest?.yarn} fallback="Sợi Xanh Việt Co., Ltd.(越藍紗業)" />
+      <h2>越南紗廠 · 簽發端主控台</h2>
       <p style={{ color: '#666' }}>
-        幕 1:以 Thép Việt sandbox LE AID 鑰簽發 pcf_upstream(SD-JWT VC)。一個簽章、N 張可撕欄位——欄位三分法見下方憑證卡。
+        幕 1:以 Sợi Xanh Việt sandbox LE AID 鑰簽發 tc_carbon_upstream(SD-JWT VC)。一個簽章、N 張可撕欄位——欄位三分法見下方憑證卡。
       </p>
+      <p style={{ color: '#888', fontSize: 13 }}>Textile Exchange TC 欄位;pcf_* 為我方延伸——TC 本身無碳數據。</p>
 
       <label style={{ marginRight: 12 }}>
         案件:

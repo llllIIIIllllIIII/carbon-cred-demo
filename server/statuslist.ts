@@ -4,7 +4,7 @@
  * 正式檔案:data/status/mandates.jwt、data/status/credentials.jwt——
  * compact signed JWT,header.typ="statuslist+jwt",payload 含 sub/iat/exp/ttl 與
  * status_list = { bits: 1, lst: base64url(zlib 壓縮位元陣列) }。
- * 簽章鑰:鴻鋼 LE 鑰(閘道為兩份清單的發布方/host,經 server/keys.ts 載入)。
+ * 簽章鑰:FAB LE 鑰(閘道為兩份清單的發布方/host,經 server/keys.ts 載入)。
  * 驗證方必先驗 compact JWS 簽章,再解碼 payload.status_list.bits/lst。
  * 裸 JSON bit array 僅可作為明確標示的 fallback,不得出現於正式流程。
  */
@@ -80,7 +80,7 @@ export interface CheckStatusBitOptions {
  *   1. 先驗 compact JWS 簽章(issuerPublicKey,取自 manifest 公開材料),簽章不過直接回錯。
  *   2. header.typ 必須為 "statuslist+jwt"(L3:不驗 typ 等於接受任何同鑰簽出的 JWT 冒充狀態清單)。
  *   3. F6(Codex adversarial review)跨清單替換防線:payload.sub 必須等於**預期清單 URI**
- *      (expectedSub)——同一把鴻鋼鑰同時簽 mandates 與 credentials 兩份清單,不驗 sub 就能拿
+ *      (expectedSub)——同一把FAB鑰同時簽 mandates 與 credentials 兩份清單,不驗 sub 就能拿
  *      credentials token 當 mandates 查、反之亦然。呼叫端一律傳入「被查引用之 status.status_list.uri」。
  *   4. F6 陳舊防線:驗 iat 新鮮度(now - iat ≤ ttl + skew)與未來偏移(iat - now ≤ skew),並驗 exp;
  *      快取到 180 天 exp 前無視 5 分鐘 ttl 一律接受的舊行為就此關閉。now 由呼叫端注入(測試不寫死日期)。
@@ -165,7 +165,7 @@ function statusTokenIsStale(token: string, nowSec: number, skewSec = STATUS_CLOC
 }
 
 /**
- * 閘道(清單發布方=鴻鋼)專用:讀取正式 Status List Token,若已接近/超過 ttl 則以鴻鋼鑰**重簽**
+ * 閘道(清單發布方=FAB)專用:讀取正式 Status List Token,若已接近/超過 ttl 則以FAB鑰**重簽**
  * (保留現有 bit 狀態、只換新 iat)再回傳,使 `make dev` 長時間執行後 disclose/verify 仍拿到新鮮清單
  * (F6 的 ttl 新鮮度檢查因此不會把 demo 卡死)。
  *

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Manifest, DiscloseEvent } from '../App';
+import type { PrecursorRef } from '../../../shared/types';
 import { LeiBadge } from './badge';
 import { StackChart } from '../components/StackChart';
 import { DenyStamp } from '../components/DenyStamp';
@@ -7,15 +8,10 @@ import { DenyStamp } from '../components/DenyStamp';
 type CaseId = 'A' | 'B';
 
 interface AggregateBreakdown {
-  precursor_contribution_tco2e_per_t: number;
-  self_direct_tco2e_per_t: number;
-  self_indirect_tco2e_per_t: number;
-  carbon_total_tco2e_per_t: number;
-}
-
-interface PrecursorRef {
-  id: string;
-  hash: string;
+  pcf_yarn: number;
+  pcf_knitting: number;
+  pcf_dyeing: number;
+  pcf_total: number;
 }
 
 interface AggregateResponse {
@@ -23,10 +19,12 @@ interface AggregateResponse {
   case_id: CaseId;
   breakdown: AggregateBreakdown;
   // F1:/api/aggregate 不再回完整可再揭露的 sd_jwt / 整包 claims(避免跨組織持有並自行揭露三個
-  // 永不揭露分項)。憑證卡改讀明列的公開/合約層欄位;跨組織揭露一律走 POST /api/disclose。
-  cn_code: string;
-  carbon_price_paid_origin: string;
-  precursor_ref: PrecursorRef;
+  // 永不揭露分項)。憑證卡改讀明列的公開/品牌層欄位;跨組織揭露一律走 POST /api/disclose。
+  product: string;
+  hs6: string;
+  origin: string;
+  quantity_kg: number;
+  precursor_refs: PrecursorRef[];
   status: { idx: number; uri: string };
   issued_at: string;
   valid_from: string;
@@ -40,9 +38,10 @@ interface AggregateErrorResponse {
   reason_code?: string;
 }
 
+/** A/B 差異只來自 pcf_dyeing 的燃料與綠電比(seed cases.A/B)。 */
 const CASE_LABELS: Record<CaseId, string> = {
-  A: '案 A · 上游 EAF 電弧爐(較低碳)',
-  B: '案 B · 上游 BF-BOF 高爐轉爐(較高碳)',
+  A: '案 A · 染整燃料 natural_gas + 30% 綠電(較低碳)',
+  B: '案 B · 染整燃料 coal、無綠電(較高碳,超過門檻)',
 };
 
 interface PoliciesResponse {
@@ -51,12 +50,12 @@ interface PoliciesResponse {
 }
 
 const REASON_LABELS_P2: Record<string, string> = {
-  POLICY_P2_CONFIDENTIAL: '越界索取機密標籤欄位(machine_energy 等)',
+  POLICY_P2_CONFIDENTIAL: '越界索取機密標籤欄位(全廠產量 plant_total_output 等)',
   REPLAY_DETECTED: '重放:同一 (mandate_id, request_nonce) 已出示過',
   CLAIM_NOT_IN_MANDATE: '請求欄位不在 mandate.allowed_claims 範圍內',
 };
 
-/** Tab 2 · 鴻鋼閘道(幕 2:聚合;架構決策 §4 POST /api/aggregate)。 */
+/** Tab 2 · 誠紡閘道(幕 2:聚合;架構決策 §4 POST /api/aggregate)。 */
 export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null; lastDisclose?: DiscloseEvent | null }) {
   const [caseId, setCaseId] = useState<CaseId>('A');
   const [result, setResult] = useState<AggregateResponse | null>(null);
@@ -98,11 +97,11 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
 
   return (
     <section>
-      <LeiBadge role={manifest?.fab} fallback="鴻鋼精密扣件" />
-      <h2>鴻鋼閘道 · 聚合簽發(幕 2)</h2>
+      <LeiBadge role={manifest?.fab} fallback="誠紡實業股份有限公司" />
+      <h2>誠紡閘道 · 聚合簽發(幕 2)</h2>
       <p style={{ color: '#666' }}>
-        鴻鋼以持有者身分讀上游 pcf_upstream 的完整客戶層(它是買方,拿得到)、驗過簽章之後,程式計算自身產品(六角螺栓 M12)的聚合碳足跡並簽發
-        pcf_aggregate——<strong>新憑證裡沒有上游明細,只有一個參照指紋</strong>。
+        誠紡以持有者身分讀上游 tc_carbon_upstream(紗,Sợi Xanh Việt)與外包 pcf_dyeing(染整,彩合染整)、驗過簽章之後,程式計算自身產品(胚布)的三段聚合碳足跡並簽發
+        pcf_aggregate——<strong>下游拿到的憑證裡沒有紗廠是誰、沒有染整廠帳單,只有兩個參照指紋</strong>。
       </p>
 
       <label style={{ marginRight: 12 }}>
@@ -120,28 +119,34 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
 
       {result && (
         <>
-          <h3>疊層熱點圖(前驅物 / 自身 direct / 自身 indirect)</h3>
+          <h3>疊層熱點圖(紗 / 織布 / 染整)</h3>
           <StackChart
-            precursor={result.breakdown.precursor_contribution_tco2e_per_t}
-            selfDirect={result.breakdown.self_direct_tco2e_per_t}
-            selfIndirect={result.breakdown.self_indirect_tco2e_per_t}
-            total={result.breakdown.carbon_total_tco2e_per_t}
+            yarn={result.breakdown.pcf_yarn}
+            knitting={result.breakdown.pcf_knitting}
+            dyeing={result.breakdown.pcf_dyeing}
+            total={result.breakdown.pcf_total}
             thresholdMax={result.contract_carbon_max}
           />
 
           <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: 16, marginTop: 16, background: '#fff', maxWidth: 640 }}>
             <h3 style={{ marginTop: 0 }}>pcf_aggregate 憑證卡</h3>
-            <p style={{ fontSize: 12, color: '#666' }}>🟢 公開層(非 SD 明文) · 🟡 SD 可撕欄(買方合約層 + 客戶層)</p>
-            <Row label="🟢 下游 CN Code" value={String(result.cn_code)} />
-            <Row label="🟡 聚合總值(買方合約層)" value={`${result.breakdown.carbon_total_tco2e_per_t} tCO2e/t`} />
-            <Row label="🟡 台灣碳費(客戶層)" value={String(result.carbon_price_paid_origin ?? '')} />
-            <Row label="🟢 precursor_ref.id" value={result.precursor_ref.id} />
-            <Row label="🟢 precursor_ref.hash" value={result.precursor_ref.hash} />
+            <p style={{ fontSize: 12, color: '#666' }}>🟢 公開層(非 SD 明文) · 🟡 品牌層(M2 合約層)</p>
+            <Row label="🟢 產品" value={result.product} />
+            <Row label="🟢 HS6" value={result.hs6} />
+            <Row label="🟢 產地" value={result.origin} />
+            <Row label="🟡 出貨重量 quantity_kg" value={`${result.quantity_kg} kg`} />
+            <Row label="🟡 聚合總值 pcf_total(品牌合約層)" value={`${result.breakdown.pcf_total} kgCO₂e/kg`} />
+            {result.precursor_refs.map((ref, i) => (
+              <div key={ref.id}>
+                <Row label={`🟢 參照指紋 #${i + 1} · id`} value={ref.id} />
+                <Row label={`🟢 參照指紋 #${i + 1} · hash`} value={ref.hash} />
+              </div>
+            ))}
             <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#666' }}>
-              precursor_ref 僅為上游憑證的 id + hash 兩個欄位——不含上游任何明細(direct/indirect/生產路線等)。
+              precursor_refs 僅為兩張外部憑證(紗、染整)的 id + hash——不含上游任何明細(direct/indirect/生產路線等)。
             </p>
             <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#888' }}>
-              pcf_aggregate 完整簽章 token 是鴻鋼內部簽發物,不由本端點對外交付——跨組織揭露一律走 Brand
+              pcf_aggregate 完整簽章 token 是誠紡內部簽發物,不由本端點對外交付——跨組織揭露一律走 Nordlicht 品牌
               Agent 的 <code>/api/disclose</code>(mandate + Cedar 逐 claim + 閘道 receipt)。
             </p>
           </div>
@@ -153,7 +158,9 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
           Gateway 自身持有的 local state;底部 AuditStrip 仍以既有游標輪詢獨立顯示新事件。 */}
       <h3 style={{ marginTop: 32 }}>越界攔截判定(幕 4)· Cedar 決策面板</h3>
       {!lastDisclose ? (
-        <p style={{ color: '#666' }}>尚無查驗請求——請至「Brand Agent」分頁按「發出查驗請求」或「加碼索取 machine_energy」。</p>
+        <p style={{ color: '#666' }}>
+          尚無查驗請求——請至「Nordlicht 品牌 Agent」分頁按「發出查驗請求」或「加碼索取 全廠產量 plant_total_output」。
+        </p>
       ) : (
         <>
           <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: '8px 12px', maxWidth: 640, background: '#f7f9ff', fontSize: 13 }}>

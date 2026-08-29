@@ -1,7 +1,7 @@
 /**
  * M1/M2 mandate 簽發(幕 3 前置;架構決策 §4:POST /api/mandates)。
  * 格式:compact signed JWT(jose,EdDSA),header { typ:"mandate+jwt", alg:"EdDSA", kid }。
- * 簽署者經 server/keys.ts 之 sandbox ECR 鑰(M1=鴻鋼財務主管、M2=Brand 永續長);
+ * 簽署者經 server/keys.ts 之 sandbox ECR 鑰(M1=FAB財務主管、M2=Brand 永續長);
  * delegate_kid 綁定對應 workload 公鑰(M1=fab-workload、M2=brand-workload)。
  *
  * M2 allowed_claims:幕 3 disclose 消費對象是 pcf_aggregate,而規格v2:155-157 列的是
@@ -25,7 +25,7 @@ import type { MandateId, MandatePayload } from '../../shared/types';
 export const GATEWAY_AUD = 'fab-gateway';
 
 /**
- * F4(Codex adversarial review)閘道 PERMIT receipt 之常數——閘道(鴻鋼)以 LE 鑰對每次 PERMIT
+ * F4(Codex adversarial review)閘道 PERMIT receipt 之常數——閘道(FAB)以 LE 鑰對每次 PERMIT
  * 簽出一份 receipt,綁定 presentation_hash + mandate_jti + request_nonce + audience + issued_at。
  * Brand 端(/api/verify 與 verify-offline)以此 receipt 抓「擷取的 presentation 換 nonce/配對他 mandate
  * 重放」。常數放在無 DB 依賴的 mandate.ts,供閘道(discloseGateway)簽章端與 Brand 驗證端共用同一定義。
