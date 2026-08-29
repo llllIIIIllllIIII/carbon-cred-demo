@@ -111,11 +111,11 @@ function consistencyScan(): string[] {
     ['human.key', /human[._]key/i],
     ['status_list_ref', /status_list_ref/],
     ['encodedList', /encodedList/],
-    ['單一 workload.key 命名', /(?<!hunggang-)(?<!bruck-)workload\.key/],
+    ['單一 workload.key 命名', /(?<!fab-)(?<!brand-)workload\.key/],
     ['錢包/RPC/testnet 建立指示', /(testnet|RPC 連線|建立錢包)/i],
   ];
-  // 裸 bit array 僅得與 fallback/保底 同現
-  const nakedRule: [string, RegExp, RegExp] = ['裸 bit array 未標示 fallback', /(裸[^\n]{0,8}bit|裸 ?JSON)/i, /(fallback|保底|明確標示)/];
+  // 裸 bit array 僅得與 fallback/保底 同現,或以禁用語(v3:不得出現/無退路)引用
+  const nakedRule: [string, RegExp, RegExp] = ['裸 bit array 未標示 fallback', /(裸[^\n]{0,8}bit|裸 ?JSON)/i, /(fallback|保底|明確標示|不得出現|退路)/];
   // 程式檔硬規則(無豁免):不得出現任何鏈上連線/錢包建立技術指標
   const codeHard: [string, RegExp] = ['程式含鏈上/testnet 技術指標', /(testnet|sepolia|goerli|JsonRpcProvider|createWallet|new +Wallet\(|infura|mnemonic)/];
 
@@ -148,7 +148,7 @@ async function main() {
 
   // 3) manifest
   const manifestPath = path.join(ROOT, 'data', 'vlei', 'manifest.json');
-  const ROLES = ['thepviet', 'hunggang', 'bruck', 'taiwanverify', 'hunggang_cfo', 'bruck_cso'];
+  const ROLES = ['yarn', 'fab', 'brand', 'cb', 'fab_cfo', 'brand_cso'];
   let manifest: Manifest | null = null;
   if (fs.existsSync(manifestPath)) manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   check(
@@ -176,7 +176,7 @@ async function main() {
   // 驗證方順序:先驗 compact JWS 簽章(鴻鋼 LE 公鑰,取自 manifest),再解碼 payload
   let payload: Record<string, any> | null = null;
   try {
-    payload = (await jwtVerify(token, publicKeyFromQb64(manifest.hunggang.public_key))).payload as Record<string, any>;
+    payload = (await jwtVerify(token, publicKeyFromQb64(manifest.fab.public_key))).payload as Record<string, any>;
   } catch {
     /* 驗簽失敗 → payload 維持 null */
   }
@@ -194,7 +194,7 @@ async function main() {
   // 4) sandbox verify × 2 ECR
   const py = path.join(ROOT, '.venv', 'bin', 'python');
   const sb = path.join(ROOT, 'vendor', 'vlei-sandbox', 'scripts', 'vlei_sandbox.py');
-  for (const role of ['hunggang_cfo', 'bruck_cso'] as const) {
+  for (const role of ['fab_cfo', 'brand_cso'] as const) {
     const said = manifest[role].credential_said;
     const r = spawnSync(py, [sb, '--dir', ROOT, 'verify', '--said', said], { encoding: 'utf-8' });
     check(`sandbox verify ${role} ECR(${said.slice(0, 12)}…)`, r.status === 0 && r.stdout.includes('chain verified'));
@@ -202,10 +202,10 @@ async function main() {
 
   // 5) key loader 簽驗章
   try {
-    const k = loadSandboxKey('thepviet');
+    const k = loadSandboxKey('yarn');
     const payloadBuf = Buffer.from('carbon-cred-demo · phase0 · key-loader self test');
     const sig = crypto.sign(null, payloadBuf, k.privateKey);
-    const ok = crypto.verify(null, payloadBuf, publicKeyFromQb64(manifest.thepviet.public_key), sig);
+    const ok = crypto.verify(null, payloadBuf, publicKeyFromQb64(manifest.yarn.public_key), sig);
     check('key loader:Thép Việt LE 鑰簽章 → manifest 公鑰驗證成功', ok);
   } catch (e) {
     check('key loader:Thép Việt LE 鑰簽章 → manifest 公鑰驗證成功', false, String(e));
@@ -293,7 +293,7 @@ async function main() {
 
       // H1 負向測項:以他方(鴻鋼)公鑰驗本方(Thép Việt)的 pcf_upstream 必須失敗(信任邊界原則
       // 「一方一鑰」;繞過 kid 自動解析,強制傳入錯誤的公鑰解析函式)。
-      const wrongPartyResult = await verifyCompactSdJwt(issued.sd_jwt, () => publicKeyFromQb64(manifest!.hunggang.public_key));
+      const wrongPartyResult = await verifyCompactSdJwt(issued.sd_jwt, () => publicKeyFromQb64(manifest!.fab.public_key));
       check(
         'H1:以鴻鋼公鑰驗 Thép Việt 的 pcf_upstream 必須失敗(一方一鑰)',
         wrongPartyResult.ok === false && wrongPartyResult.reasonCode === CODES.CREDENTIAL_SIG_INVALID,
@@ -560,8 +560,8 @@ async function main() {
         id: 'pcf_upstream-A',
         type: 'pcf_upstream',
         caseId: 'A',
-        issuerParty: 'thepviet',
-        holderParty: 'hunggang',
+        issuerParty: 'yarn',
+        holderParty: 'fab',
         payload: { note: 'race-primitive-self-test' },
         statusIdx: 0,
         statusUri: statusListUri('credentials'),
@@ -691,7 +691,7 @@ async function main() {
     const app12 = buildServer();
     try {
       const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
-      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const brandWorkload = loadWorkloadKey('brand-workload');
 
       const m2Res = await app12.inject({ method: 'POST', url: '/api/mandates', payload: { mandate: 'M2' } });
       check('POST /api/mandates(M2)回 200', m2Res.statusCode === 200, `status=${m2Res.statusCode} body=${m2Res.body.slice(0, 200)}`);
@@ -699,12 +699,12 @@ async function main() {
       m2Summary = m2Body.summary;
       m2MandateJwt = m2Body.mandate_jwt;
 
-      check('M2 delegate_kid == bruck-workload 公鑰 kid', m2Summary.delegate_kid === bruckWorkload.kid, `got=${m2Summary.delegate_kid}`);
+      check('M2 delegate_kid == brand-workload 公鑰 kid', m2Summary.delegate_kid === brandWorkload.kid, `got=${m2Summary.delegate_kid}`);
       check('M2 mandates Token Status List idx == 1', m2Summary.status.idx === 1, `got=${m2Summary.status.idx}`);
       check(
-        'M2 簽發者 kid 為 Bruck 永續長 ECR AID',
-        decodeProtectedHeader(m2MandateJwt).kid === manifest.bruck_cso.aid,
-        `kid=${decodeProtectedHeader(m2MandateJwt).kid} expected=${manifest.bruck_cso.aid}`,
+        'M2 簽發者 kid 為 Brand 永續長 ECR AID',
+        decodeProtectedHeader(m2MandateJwt).kid === manifest.brand_cso.aid,
+        `kid=${decodeProtectedHeader(m2MandateJwt).kid} expected=${manifest.brand_cso.aid}`,
       );
       check(
         '遺留(b)鎖:M2 allowed_claims 不含 precursor_contribution_tco2e_per_t',
@@ -763,8 +763,8 @@ async function main() {
         `reused1=${m1Body1.reused} reused2=${m1Body2.reused}`,
       );
       check(
-        'M1 delegate_kid == hunggang-workload 公鑰 kid、mandates Token Status List idx == 0',
-        m1Body1.summary.delegate_kid === loadWorkloadKey('hunggang-workload').kid && m1Body1.summary.status.idx === 0,
+        'M1 delegate_kid == fab-workload 公鑰 kid、mandates Token Status List idx == 0',
+        m1Body1.summary.delegate_kid === loadWorkloadKey('fab-workload').kid && m1Body1.summary.status.idx === 0,
         JSON.stringify(m1Body1.summary),
       );
       const mandateDb = openDb();
@@ -783,9 +783,9 @@ async function main() {
   {
     const app13 = buildServer();
     try {
-      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const brandWorkload = loadWorkloadKey('brand-workload');
       const permitNonce = randomNonce();
-      permitRequestJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, permitNonce);
+      permitRequestJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, permitNonce);
 
       const mandateDbBefore = openDb();
       const queriesUsedBefore = (mandateDbBefore.prepare('SELECT queries_used FROM mandates WHERE id = ?').get('M2') as { queries_used: number })
@@ -808,7 +808,7 @@ async function main() {
       );
       permitPresentation = discloseBody.presentation;
       permitReceipt = discloseBody.receipt;
-      // F4:PERMIT 回應必附閘道簽章 receipt(供 Bruck 端 key-binding 驗證)。
+      // F4:PERMIT 回應必附閘道簽章 receipt(供 Brand 端 key-binding 驗證)。
       check('F4:PERMIT 回應含閘道簽章 receipt(非空字串)', typeof permitReceipt === 'string' && permitReceipt.length > 0, `receipt=${String(permitReceipt).slice(0, 24)}…`);
 
       // 逐欄核對「在/不在」:presentation 只含 M2.allowed_claims 六欄(以 verifyCompactSdJwt 解出已揭露 payload)。
@@ -842,9 +842,9 @@ async function main() {
   {
     const app14 = buildServer();
     try {
-      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      const brandWorkload = loadWorkloadKey('brand-workload');
       const overRequestClaims = [...m2Summary.allowed_claims, 'machine_energy'];
-      const requestJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', overRequestClaims, randomNonce());
+      const requestJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', overRequestClaims, randomNonce());
 
       const auditBeforeRes = await app14.inject({ method: 'GET', url: '/api/audit?after=0' });
       const auditCountBefore = (auditBeforeRes.json() as unknown[]).length;
@@ -895,8 +895,8 @@ async function main() {
   {
     const app16 = buildServer();
     try {
-      const bruckWorkload = loadWorkloadKey('bruck-workload');
-      const hunggangWorkload = loadWorkloadKey('hunggang-workload');
+      const brandWorkload = loadWorkloadKey('brand-workload');
+      const fabWorkload = loadWorkloadKey('fab-workload');
 
       // (a) 壞簽章:直接竄改 DB 內 M2 mandate 的 token(模擬 mandates 表遭竄改),測完立即復原。
       const tamperDb = openDb();
@@ -905,7 +905,7 @@ async function main() {
       tamperDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(tamperedToken, 'M2');
       tamperDb.close();
 
-      const badSigRequestJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const badSigRequestJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
       const badSigRes = await app16.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: badSigRequestJws } });
       check(
         'mandate 遭竄改(壞簽章)→ 403 MANDATE_SIG_INVALID',
@@ -917,17 +917,17 @@ async function main() {
       restoreDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(originalToken, 'M2');
       restoreDb.close();
 
-      // (b) 非 delegate 鑰簽 request → DELEGATE_KEY_MISMATCH(以 hunggang-workload 鑰簽,冒充 bruck-workload)。
-      const wrongDelegateJws = await signDiscloseRequest(hunggangWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      // (b) 非 delegate 鑰簽 request → DELEGATE_KEY_MISMATCH(以 fab-workload 鑰簽,冒充 brand-workload)。
+      const wrongDelegateJws = await signDiscloseRequest(fabWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
       const wrongDelegateRes = await app16.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: wrongDelegateJws } });
       check(
-        '非 delegate 鑰簽 request(hunggang-workload 冒簽)→ 403 DELEGATE_KEY_MISMATCH',
+        '非 delegate 鑰簽 request(fab-workload 冒簽)→ 403 DELEGATE_KEY_MISMATCH',
         wrongDelegateRes.statusCode === 403 && (wrongDelegateRes.json() as { reason_code?: string }).reason_code === CODES.DELEGATE_KEY_MISMATCH,
         `status=${wrongDelegateRes.statusCode} body=${wrongDelegateRes.body}`,
       );
 
       // 復原後確認 M2 仍可正常運作(避免復原邏輯本身有誤,靜默留下壞資料)。
-      const sanityJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const sanityJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
       const sanityRes = await app16.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: sanityJws } });
       check(
         '復原 mandate token 後,正常簽章的 disclose request 仍可 PERMIT(確認復原成功、未留壞資料)',
@@ -939,13 +939,13 @@ async function main() {
     }
   }
 
-  // 17) Bruck 端驗證(server/creds/verifyPresentation.ts,幕 3 DoD)。
+  // 17) Brand 端驗證(server/creds/verifyPresentation.ts,幕 3 DoD)。
   {
     const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
 
     // (a) 合法 presentation + 閘道 receipt 全綠(F4:缺 receipt 會在 key-binding 檢查失敗)。
     const goodResult = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: m2MandateJwt, manifest, receipt: permitReceipt });
-    check('Bruck 端驗證:合法 presentation 全部檢查項通過', goodResult.ok && goodResult.checks.every((c) => c.ok), JSON.stringify(goodResult.checks));
+    check('Brand 端驗證:合法 presentation 全部檢查項通過', goodResult.ok && goodResult.checks.every((c) => c.ok), JSON.stringify(goodResult.checks));
 
     // (b) 竄改(tamper)presentation → 簽章驗證失敗(重用既有竄改工具,經 /api/creds/tamper-demo)。
     const app17 = buildServer();
@@ -958,7 +958,7 @@ async function main() {
     }
     const tamperedResult = await verifyPresentation({ presentationSdJwt: tamperedPresentation, mandateJwt: m2MandateJwt, manifest });
     check(
-      'Bruck 端驗證:竄改後 presentation 於 SD-JWT 簽章檢查項失敗',
+      'Brand 端驗證:竄改後 presentation 於 SD-JWT 簽章檢查項失敗',
       tamperedResult.ok === false && tamperedResult.checks[0]?.ok === false,
       JSON.stringify(tamperedResult.checks.slice(0, 1)),
     );
@@ -974,7 +974,7 @@ async function main() {
       for (const claim of m2Summary.allowed_claims) if (isSelectableDisclosure(claim)) overBroadFrame[claim] = true;
       overBroadFrame.precursor_contribution_tco2e_per_t = true; // 故意多挑一個不在 allowed_claims 內的 disclosure
       // 以低階入口 presentRawDisclosures 構造(繞過 L4 的 presenter deny-list),模擬「閘道被繞過/
-      // 惡意 presenter」——正是要證明即使前面兩道防線失效,Bruck 端雙向約束仍會攔下。
+      // 惡意 presenter」——正是要證明即使前面兩道防線失效,Brand 端雙向約束仍會攔下。
       const overBroadPresentation = await presentRawDisclosures(aggRow.sd_jwt, overBroadFrame as never);
       const overBroadResult = await verifyPresentation({ presentationSdJwt: overBroadPresentation, mandateJwt: m2MandateJwt, manifest });
       const boundaryCheck = overBroadResult.checks.find((c) => c.name.includes('雙向約束'));
@@ -986,11 +986,11 @@ async function main() {
     }
 
     // (d) 遺留(a)鎖:錯誤角色簽發(vct 宣稱 pcf_aggregate,實際由 Thép Việt LE 鑰簽發,非鴻鋼)→ 拒絕。
-    const thepvietKey = loadSandboxKey('thepviet');
+    const yarnKey = loadSandboxKey('yarn');
     const nowSec = Math.floor(Date.now() / 1000);
     const forgedPayload = {
       vct: PCF_AGGREGATE_VCT,
-      iss: thepvietKey.kid,
+      iss: yarnKey.kid,
       iat: nowSec,
       nbf: nowSec,
       exp: nowSec + 3600,
@@ -1000,8 +1000,8 @@ async function main() {
       carbon_total_tco2e_per_t: 1.5125,
     };
     const forgedFrame = { carbon_total_tco2e_per_t: true } as unknown as DisclosureFrame<SdJwtVcPayload>;
-    const forgedInstance = buildIssuerInstance(thepvietKey);
-    const forgedSdJwt = await forgedInstance.issue(forgedPayload as unknown as SdJwtVcPayload, forgedFrame, { header: { kid: thepvietKey.kid } });
+    const forgedInstance = buildIssuerInstance(yarnKey);
+    const forgedSdJwt = await forgedInstance.issue(forgedPayload as unknown as SdJwtVcPayload, forgedFrame, { header: { kid: yarnKey.kid } });
     const forgedResult = await verifyPresentation({ presentationSdJwt: forgedSdJwt, mandateJwt: m2MandateJwt, manifest });
     const vctCheck = forgedResult.checks.find((c) => c.name.includes('vct'));
     check(
@@ -1139,8 +1139,8 @@ async function main() {
         check(`demo 輔助路由缺欄位/打錯字(${JSON.stringify(payload)})→ 400`, r.statusCode === 400, `status=${r.statusCode} body=${r.body}`);
       }
 
-      // (c) 合法呼叫 → 200,request_jws header.kid == bruck-workload kid,payload 欄位與請求一致。
-      const bruckWorkload = loadWorkloadKey('bruck-workload');
+      // (c) 合法呼叫 → 200,request_jws header.kid == brand-workload kid,payload 欄位與請求一致。
+      const brandWorkload = loadWorkloadKey('brand-workload');
       const demoReqClaims = m2Summary.allowed_claims;
       const signRes = await app21.inject({
         method: 'POST',
@@ -1154,8 +1154,8 @@ async function main() {
       );
       const signBody = signRes.json() as { request_jws: string; request_nonce: string };
       check(
-        'request_jws header.kid == bruck-workload 公鑰 kid',
-        decodeProtectedHeader(signBody.request_jws).kid === bruckWorkload.kid,
+        'request_jws header.kid == brand-workload 公鑰 kid',
+        decodeProtectedHeader(signBody.request_jws).kid === brandWorkload.kid,
         `kid=${decodeProtectedHeader(signBody.request_jws).kid}`,
       );
       const signedPayload = (decodeJwt(signBody.request_jws) as unknown as { payload: Record<string, unknown> }).payload;
@@ -1185,7 +1185,7 @@ async function main() {
   {
     const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
     const seedData = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8'));
-    const bruckWorkload = loadWorkloadKey('bruck-workload');
+    const brandWorkload = loadWorkloadKey('brand-workload');
     const app23 = buildServer();
 
     try {
@@ -1193,11 +1193,11 @@ async function main() {
       // (a) 不誠實偽造:攻擊者用 Thép Việt LE 鑰**實際簽章**(header.kid = Thép Việt AID),
       //     payload.iss 卻填鴻鋼 LE AID。舊版綁定檢查只比對 payload.iss、取鑰卻走 header.kid,
       //     兩者從不互相校驗 → 偽造的 carbon_total 會被判 valid=true(PoC 已證實)。
-      const attackerKey = loadSandboxKey('thepviet');
+      const attackerKey = loadSandboxKey('yarn');
       const c1Now = Math.floor(Date.now() / 1000);
       const forgedClaims = {
         vct: PCF_AGGREGATE_VCT,
-        iss: manifest.hunggang.aid, // 宣稱鴻鋼簽的
+        iss: manifest.fab.aid, // 宣稱鴻鋼簽的
         iat: c1Now,
         nbf: c1Now,
         exp: c1Now + 3600,
@@ -1235,7 +1235,7 @@ async function main() {
       // (b) kid 冒充:header.kid 填鴻鋼 AID、實際仍用 Thép Việt 鑰簽 → 第 1 項簽章驗證即失敗
       //     (取鑰依 kid,解出鴻鋼公鑰,驗不過攻擊者的簽章)。
       const kidSpoofSdJwt = await buildIssuerInstance(attackerKey).issue(forgedClaims as unknown as SdJwtVcPayload, forgedFrame23, {
-        header: { kid: manifest.hunggang.aid },
+        header: { kid: manifest.fab.aid },
       });
       const kidSpoofResult = await verifyPresentation({ presentationSdJwt: kidSpoofSdJwt, mandateJwt: m2MandateJwt, manifest });
       check(
@@ -1305,14 +1305,14 @@ async function main() {
 
       // ---------- M2:mandate 必須由預期 ECR 角色簽發 ----------
       const mandatePayloadOriginal = decodeJoseJwt(m2MandateJwt) as Record<string, unknown>;
-      const cfoKey = loadSandboxKey('hunggang_cfo');
+      const cfoKey = loadSandboxKey('fab_cfo');
       // (a) 換角色簽(鴻鋼財務主管 ECR 冒簽 M2):kid/iss 都誠實寫自己 → 必須因「非預期角色」被拒。
       const wrongRoleMandate = await new SignJWT({ ...mandatePayloadOriginal, iss: cfoKey.kid })
         .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: cfoKey.kid })
         .sign(cfoKey.privateKey);
-      // (b) kid 冒充 Bruck 永續長、實際用鴻鋼財務主管鑰簽 → 簽章驗證失敗。
+      // (b) kid 冒充 Brand 永續長、實際用鴻鋼財務主管鑰簽 → 簽章驗證失敗。
       const kidSpoofMandate = await new SignJWT({ ...mandatePayloadOriginal })
-        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: manifest.bruck_cso.aid })
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: manifest.brand_cso.aid })
         .sign(cfoKey.privateKey);
 
       const mandateDb23 = openDb();
@@ -1320,12 +1320,12 @@ async function main() {
       mandateDb23.close();
       for (const [label, badToken] of [
         ['非預期角色(鴻鋼財務主管 ECR)簽發 M2', wrongRoleMandate],
-        ['kid 冒充 Bruck 永續長、實際用他方鑰簽', kidSpoofMandate],
+        ['kid 冒充 Brand 永續長、實際用他方鑰簽', kidSpoofMandate],
       ] as const) {
         const swapDb = openDb();
         swapDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(badToken, 'M2');
         swapDb.close();
-        const jws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+        const jws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
         const res = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: jws } });
         check(
           `M2:${label} → 403 MANDATE_SIG_INVALID(mandate iss 綁定預期 ECR 角色)`,
@@ -1336,11 +1336,11 @@ async function main() {
         restoreDb.prepare('UPDATE mandates SET token = ? WHERE id = ?').run(originalM2Token, 'M2');
         restoreDb.close();
       }
-      // Bruck 端(verifyPresentation 第 5 項)同樣不接受非預期角色簽發的 M2。
+      // Brand 端(verifyPresentation 第 5 項)同樣不接受非預期角色簽發的 M2。
       const wrongRoleVerify = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: wrongRoleMandate, manifest, receipt: permitReceipt });
       const mandateCheck23 = wrongRoleVerify.checks.find((c) => c.name.includes('M2 mandate 完整性'));
       check(
-        'M2:Bruck 端驗證亦拒絕非預期角色簽發的 M2 mandate(MANDATE_SIG_INVALID)',
+        'M2:Brand 端驗證亦拒絕非預期角色簽發的 M2 mandate(MANDATE_SIG_INVALID)',
         wrongRoleVerify.ok === false && mandateCheck23?.ok === false && mandateCheck23?.reasonCode === CODES.MANDATE_SIG_INVALID,
         JSON.stringify(mandateCheck23),
       );
@@ -1348,7 +1348,7 @@ async function main() {
       // ---------- M1:request_jws 新鮮度窗 ----------
       const nowSec23 = Math.floor(Date.now() / 1000);
       const staleNonce = randomNonce();
-      const staleJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, staleNonce, nowSec23 - 3600);
+      const staleJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, staleNonce, nowSec23 - 3600);
       const staleRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: staleJws } });
       check(
         'M1:iat 過舊(1 小時前)的 request_jws → 400 DISCLOSE_REQUEST_INVALID(被拒的請求無法長期保存待條件變好再用)',
@@ -1361,14 +1361,14 @@ async function main() {
         staleRetryRes.statusCode === 400,
         `status=${staleRetryRes.statusCode}`,
       );
-      const futureJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce(), nowSec23 + 3600);
+      const futureJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce(), nowSec23 + 3600);
       const futureRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: futureJws } });
       check(
         'M1:iat 超前(1 小時後)的未來票 request_jws → 400 DISCLOSE_REQUEST_INVALID',
         futureRes.statusCode === 400 && (futureRes.json() as { reason_code?: string }).reason_code === CODES.DISCLOSE_REQUEST_INVALID,
         `status=${futureRes.statusCode} body=${futureRes.body}`,
       );
-      const freshJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const freshJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
       const freshRes = await app23.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: freshJws } });
       check(
         'M1 對照組:新鮮的 request_jws 仍 PERMIT(新鮮度窗沒有把正常路徑一起擋死)',
@@ -1378,12 +1378,12 @@ async function main() {
 
       // ---------- L3:Status List Token 必須驗 typ ----------
       const realStatusToken = readStatusListToken('credentials');
-      const hunggangKey23 = loadSandboxKey('hunggang');
-      const statusIssuerPubKey = publicKeyFromQb64(manifest.hunggang.public_key);
+      const fabKey23 = loadSandboxKey('fab');
+      const statusIssuerPubKey = publicKeyFromQb64(manifest.fab.public_key);
       const realStatusPayload = decodeJoseJwt(realStatusToken ?? '') as Record<string, unknown>;
       const typSpoofToken = await new SignJWT(realStatusPayload)
-        .setProtectedHeader({ alg: 'EdDSA', typ: 'JWT', kid: hunggangKey23.kid }) // 同一把鑰、內容合法,只是 typ 不對
-        .sign(hunggangKey23.privateKey);
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'JWT', kid: fabKey23.kid }) // 同一把鑰、內容合法,只是 typ 不對
+        .sign(fabKey23.privateKey);
       const typSpoofResult = await checkStatusBit(typSpoofToken, 2, statusIssuerPubKey, statusListUri('credentials'));
       check(
         'L3:typ 非 "statuslist+jwt" 的 JWT(同鑰簽、內容相同)→ checkStatusBit 拒絕',
@@ -1413,7 +1413,7 @@ async function main() {
       const allowedOnlyPresentation = await presentSelectedDisclosures(aggSdJwt23, { carbon_total_tco2e_per_t: true } as never);
       check('L4 對照組:只挑允許欄位仍可正常出示', typeof allowedOnlyPresentation === 'string' && allowedOnlyPresentation.length > 0);
 
-      // ---------- H3:Bruck 端 vLEI 鏈查驗只讀 data/vlei/(不再讀 .vlei/ 私鑰種子)----------
+      // ---------- H3:Brand 端 vLEI 鏈查驗只讀 data/vlei/(不再讀 .vlei/ 私鑰種子)----------
       check('H3:vLEI 公開狀態檔存在於 data/vlei/(由 server/keys.ts 於 seed 時匯出)', fs.existsSync(PUBLIC_VLEI_STATE_FILE), PUBLIC_VLEI_STATE_FILE);
       const publicStateText = fs.existsSync(PUBLIC_VLEI_STATE_FILE) ? fs.readFileSync(PUBLIC_VLEI_STATE_FILE, 'utf-8') : '';
       const publicStateJson = publicStateText ? (JSON.parse(publicStateText) as { actors: Record<string, Record<string, unknown>> }) : { actors: {} };
@@ -1422,7 +1422,7 @@ async function main() {
         Object.values(publicStateJson.actors).every((a) => !('seed' in a) && !('next_seed' in a)) && !/"A[A-Za-z0-9_-]{43}"/.test(publicStateText),
         `actors=${Object.keys(publicStateJson.actors).length}`,
       );
-      const publicStateVerify = spawnSync(py, [sb, '--dir', VLEI_PUBLIC_STATE_DIR, 'verify', '--said', manifest.hunggang.credential_said], {
+      const publicStateVerify = spawnSync(py, [sb, '--dir', VLEI_PUBLIC_STATE_DIR, 'verify', '--said', manifest.fab.credential_said], {
         encoding: 'utf-8',
       });
       check(
@@ -1435,10 +1435,10 @@ async function main() {
         'H3:verifyPresentation 以 VLEI_PUBLIC_STATE_DIR 執行 sandbox verify(不再 --dir 指向 repo 根)',
         verifyPresentationSource.includes("'--dir', VLEI_PUBLIC_STATE_DIR") && !/'--dir',\s*ROOT/.test(verifyPresentationSource),
       );
-      const bruckAgentSource = fs.readFileSync(path.join(ROOT, 'web', 'src', 'tabs', 'BruckAgent.tsx'), 'utf-8');
+      const brandAgentSource = fs.readFileSync(path.join(ROOT, 'web', 'src', 'tabs', 'BrandAgent.tsx'), 'utf-8');
       check(
-        'H3:BruckAgent 文案「只讀 token、manifest 公鑰、data/vlei/、data/status/」現在為真(讀取範圍與程式一致)',
-        bruckAgentSource.includes('只讀 token、manifest 公鑰、data/vlei/、data/status/') && verifyPresentationSource.includes('VLEI_PUBLIC_STATE_DIR'),
+        'H3:BrandAgent 文案「只讀 token、manifest 公鑰、data/vlei/、data/status/」現在為真(讀取範圍與程式一致)',
+        brandAgentSource.includes('只讀 token、manifest 公鑰、data/vlei/、data/status/') && verifyPresentationSource.includes('VLEI_PUBLIC_STATE_DIR'),
       );
 
       // ---------- H1:query_cap 併發不得超額(函式層,非只 HTTP Promise.all)----------
@@ -1457,7 +1457,7 @@ async function main() {
 
       const capJwsList: string[] = [];
       for (let i = 0; i < concurrency; i++) {
-        capJwsList.push(await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce()));
+        capJwsList.push(await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce()));
       }
       const capDbs = capJwsList.map(() => openDb());
       const capResults = await Promise.all(capJwsList.map((jws, i) => processDiscloseRequest(capDbs[i], jws)));
@@ -1505,10 +1505,10 @@ async function main() {
   //     此處為 F2–F8)。每一項退回舊寫法必翻紅(對應 PoC 已實打舊洞/新擋)。
   {
     const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
-    const bruckWorkload = loadWorkloadKey('bruck-workload');
-    const hunggangKey = loadSandboxKey('hunggang');
-    const bruckCso = loadSandboxKey('bruck_cso');
-    const statusIssuerPubKey = publicKeyFromQb64(manifest.hunggang.public_key);
+    const brandWorkload = loadWorkloadKey('brand-workload');
+    const fabKey = loadSandboxKey('fab');
+    const brandCso = loadSandboxKey('brand_cso');
+    const statusIssuerPubKey = publicKeyFromQb64(manifest.fab.public_key);
     const m2Payload = decodeJoseJwt(m2MandateJwt) as Record<string, unknown>;
     const app24 = buildServer();
 
@@ -1563,21 +1563,21 @@ async function main() {
 
       // ---------- F7:同步 vLEI 驗證加 timeout(不阻塞 event loop)----------
       const t0 = Date.now();
-      const timeoutResult = verifyVleiChainSandbox(manifest.hunggang.credential_said, { timeoutMs: 1 });
+      const timeoutResult = verifyVleiChainSandbox(manifest.fab.credential_said, { timeoutMs: 1 });
       const elapsed = Date.now() - t0;
       check(
         'F7:vLEI 查驗以極短 timeout(1ms)→ 回明確失敗而非無限阻塞(且很快返回)',
         timeoutResult.ok === false && elapsed < 8000,
         `ok=${timeoutResult.ok} elapsed=${elapsed}ms detail=${timeoutResult.detail}`,
       );
-      const normalVleiResult = verifyVleiChainSandbox(manifest.hunggang.credential_said);
+      const normalVleiResult = verifyVleiChainSandbox(manifest.fab.credential_said);
       check('F7 對照組:正常 timeout 下 vLEI 查驗仍通過(查驗強度不變)', normalVleiResult.ok === true, JSON.stringify(normalVleiResult));
 
       // ---------- F8:雙向約束改為 disclosure-derived(schema 演進不 fail-open)----------
       const f8Now = Math.floor(Date.now() / 1000);
       const extraPayload = {
         vct: PCF_AGGREGATE_VCT,
-        iss: hunggangKey.kid,
+        iss: fabKey.kid,
         iat: f8Now,
         nbf: f8Now,
         exp: f8Now + 3600,
@@ -1592,7 +1592,7 @@ async function main() {
       const extraFrame = {
         _sd: ['carbon_total_tco2e_per_t', 'carbon_price_paid_origin', 'unexpected_extra_claim'],
       } as unknown as DisclosureFrame<SdJwtVcPayload>;
-      const extraSdJwt = await buildIssuerInstance(hunggangKey).issue(extraPayload as unknown as SdJwtVcPayload, extraFrame, { header: { kid: hunggangKey.kid } });
+      const extraSdJwt = await buildIssuerInstance(fabKey).issue(extraPayload as unknown as SdJwtVcPayload, extraFrame, { header: { kid: fabKey.kid } });
       const f8Result = await verifyPresentation({ presentationSdJwt: extraSdJwt, mandateJwt: m2MandateJwt, manifest, receipt: permitReceipt });
       const f8Boundary = f8Result.checks.find((c) => c.name.includes('雙向約束'));
       check(
@@ -1603,7 +1603,7 @@ async function main() {
 
       // ---------- F4:presentation 綁定閘道 receipt(重放/配對他 mandate 被抓)----------
       // 第二次 disclose 取另一組 presentation/receipt(用來證明 P1↔R2 / P2↔R1 交叉配對會被 hash 綁定擋下)。
-      const secondJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const secondJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
       const secondRes = await app24.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: secondJws } });
       const secondBody = secondRes.json() as { presentation: string; receipt: string };
       // (a) 缺 receipt → RECEIPT_INVALID。
@@ -1631,10 +1631,10 @@ async function main() {
         crossPR.ok === false && crossPRCheck?.ok === false && crossPRCheck?.reasonCode === CODES.RECEIPT_INVALID,
         JSON.stringify(crossPRCheck),
       );
-      // (d) 配對另一張相容 mandate(Bruck-CSO 簽、jti 不同)→ mandate_jti 綁定不符 → RECEIPT_INVALID。
+      // (d) 配對另一張相容 mandate(Brand-CSO 簽、jti 不同)→ mandate_jti 綁定不符 → RECEIPT_INVALID。
       const swappedMandate = await new SignJWT({ ...m2Payload, jti: crypto.randomUUID() })
-        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: bruckCso.kid })
-        .sign(bruckCso.privateKey);
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: brandCso.kid })
+        .sign(brandCso.privateKey);
       const swapResult = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: swappedMandate, manifest, receipt: permitReceipt });
       const swapReceiptCheck = swapResult.checks.find((c) => c.name.includes('receipt'));
       check(
@@ -1649,8 +1649,8 @@ async function main() {
       // ---------- F5:離線驗證完整驗 mandate(typ/aud/撤銷位元)----------
       // (a) typ 非 mandate+jwt → MANDATE_SIG_INVALID(check 5)。
       const typBadMandate = await new SignJWT({ ...m2Payload })
-        .setProtectedHeader({ alg: 'EdDSA', typ: 'JWT', kid: bruckCso.kid })
-        .sign(bruckCso.privateKey);
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'JWT', kid: brandCso.kid })
+        .sign(brandCso.privateKey);
       const typBadResult = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: typBadMandate, manifest, receipt: permitReceipt });
       const typBadCheck = typBadResult.checks.find((c) => c.name.includes('M2 mandate 完整性'));
       check(
@@ -1660,8 +1660,8 @@ async function main() {
       );
       // (b) aud 非本閘道 → MANDATE_SIG_INVALID(check 5)。
       const audBadMandate = await new SignJWT({ ...m2Payload, aud: 'evil-audience' })
-        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: bruckCso.kid })
-        .sign(bruckCso.privateKey);
+        .setProtectedHeader({ alg: 'EdDSA', typ: 'mandate+jwt', kid: brandCso.kid })
+        .sign(brandCso.privateKey);
       const audBadResult = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: audBadMandate, manifest, receipt: permitReceipt });
       const audBadCheck = audBadResult.checks.find((c) => c.name.includes('M2 mandate 完整性'));
       check(
@@ -1695,7 +1695,7 @@ async function main() {
       revokedCreds[2] = 1;
       await buildAndWriteStatusList('credentials', revokedCreds);
       try {
-        const jws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+        const jws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
         const res = await app24.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: jws } });
         check(
           'F3:credentials 撤銷位元設起後 disclose(案 A)→ 403 CREDENTIAL_REVOKED',
@@ -1715,7 +1715,7 @@ async function main() {
       const past = Math.floor(Date.parse('2020-01-01T00:00:00Z') / 1000);
       const expiredPayload = {
         vct: PCF_AGGREGATE_VCT,
-        iss: hunggangKey.kid,
+        iss: fabKey.kid,
         iat: past,
         nbf: past,
         exp: past + 3600,
@@ -1728,13 +1728,13 @@ async function main() {
       const expiredFrame = {
         _sd: ['carbon_total_tco2e_per_t', 'carbon_price_paid_origin'],
       } as unknown as DisclosureFrame<SdJwtVcPayload>;
-      const expiredSdJwt = await buildIssuerInstance(hunggangKey).issue(expiredPayload as unknown as SdJwtVcPayload, expiredFrame, { header: { kid: hunggangKey.kid } });
+      const expiredSdJwt = await buildIssuerInstance(fabKey).issue(expiredPayload as unknown as SdJwtVcPayload, expiredFrame, { header: { kid: fabKey.kid } });
       const swapAggDb = openDb();
       const origAgg = (swapAggDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('pcf_aggregate-A') as { sd_jwt: string }).sd_jwt;
       swapAggDb.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(expiredSdJwt, 'pcf_aggregate-A');
       swapAggDb.close();
       try {
-        const jws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+        const jws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
         const res = await app24.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: jws } });
         check(
           'F3:被揭露 aggregate 已過期(exp 在過去)→ 403 CREDENTIAL_EXPIRED',
@@ -1747,7 +1747,7 @@ async function main() {
         restoreAggDb.close();
       }
       // (c) 對照組:未撤銷、未過期 → 正常 PERMIT(F3 沒有把正常路徑一起擋死)。
-      const okJws = await signDiscloseRequest(bruckWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
+      const okJws = await signDiscloseRequest(brandWorkload, m2Summary.jti, 'A', m2Summary.allowed_claims, randomNonce());
       const okRes = await app24.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: okJws } });
       check('F3 對照組:未撤銷、未過期的 aggregate → 正常 PERMIT', okRes.statusCode === 200, `status=${okRes.statusCode} body=${okRes.body.slice(0, 160)}`);
     } finally {

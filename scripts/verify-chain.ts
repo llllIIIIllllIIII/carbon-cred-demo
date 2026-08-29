@@ -5,7 +5,7 @@
  * 逐列重算 CLAUDE.md Codex 審查定案之雜湊公式:
  *   payload_hash = sha256(event_type ‖ '\n' ‖ payload_json)
  *   entry_hash   = sha256(prev_hash ‖ payload_hash ‖ ts)
- * 並驗 sig(hunggang-workload 鑰之 Ed25519 簽章,對 entry_hash)。斷鏈/竄改/簽章不符
+ * 並驗 sig(fab-workload 鑰之 Ed25519 簽章,對 entry_hash)。斷鏈/竄改/簽章不符
  * → 非零退出 + AUDIT_CHAIN_TAMPERED。
  *
  * 用法:npx tsx scripts/verify-chain.ts [--db <sqlite 檔路徑,預設 db/demo.sqlite>]
@@ -41,7 +41,7 @@ function main() {
   const rows = db.prepare('SELECT seq, prev_hash, entry_hash, sig, event_type, payload_json, created_at FROM audit_chain ORDER BY seq ASC').all() as AuditRow[];
   db.close();
 
-  const publicKey = loadWorkloadKey('hunggang-workload').publicKey;
+  const publicKey = loadWorkloadKey('fab-workload').publicKey;
   let prevHash = GENESIS;
   let tampered = false;
   let denyLikeCount = 0;

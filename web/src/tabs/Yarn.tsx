@@ -41,7 +41,7 @@ function describeVerifyFailure(reasonCode: string | undefined, error: string | u
 }
 
 /** Tab 1 · 越南廠簽發端主控台(幕 1:簽發 pcf_upstream)。 */
-export function ThepViet({ manifest }: { manifest: Manifest | null }) {
+export function Yarn({ manifest }: { manifest: Manifest | null }) {
   const [caseId, setCaseId] = useState<CaseId>('A');
   const [issuance, setIssuance] = useState<IssueResponse | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null);
@@ -98,7 +98,7 @@ export function ThepViet({ manifest }: { manifest: Manifest | null }) {
 
   return (
     <section>
-      <LeiBadge role={manifest?.thepviet} fallback="Thép Việt Wire Co." />
+      <LeiBadge role={manifest?.yarn} fallback="Thép Việt Wire Co." />
       <h2>越南廠 · 簽發端主控台</h2>
       <p style={{ color: '#666' }}>
         幕 1:以 Thép Việt sandbox LE AID 鑰簽發 pcf_upstream(SD-JWT VC)。一個簽章、N 張可撕欄位——欄位三分法見下方憑證卡。

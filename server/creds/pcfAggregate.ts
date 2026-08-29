@@ -28,7 +28,7 @@ import { verifyCompactSdJwt } from './verifier';
 import { statusListUri } from '../statuslist';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
 import { getCredential, insertCredentialIfAbsent } from './store';
-import { issuePcfUpstream } from './pcfUpstream';
+import { issuePcfUpstream } from './tcCarbonUpstream';
 import { CODES, type ReasonCode } from '../../shared/codes';
 import {
   PCF_AGGREGATE_CUSTOMS_SD_FIELDS,
@@ -109,8 +109,8 @@ export interface PcfAggregateIssuance {
   issuedAt: string;
   validFrom: string;
   validUntil: string;
-  issuerParty: 'hunggang';
-  holderParty: 'hunggang';
+  issuerParty: 'fab';
+  holderParty: 'fab';
   statusIdx: number;
   statusUri: string;
   /** 買方合約碳排門檻(data/seed.json transaction.contract_carbon_max,非法定;L3 修正,供前端疊層熱點圖畫門檻線,不寫死於元件內)。 */
@@ -190,7 +190,7 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfAggreg
   const precursorRef: PrecursorRef = { id: `pcf_upstream-${caseId}`, hash: sha256Hex(upstream.sdJwt) };
 
   // 4) 經 server/keys.ts 載入鴻鋼 sandbox LE AID 鑰簽發。
-  const key = loadSandboxKey('hunggang');
+  const key = loadSandboxKey('fab');
   const statusIdx = PCF_AGGREGATE_STATUS_IDX[caseId];
   const statusUri = statusListUri('credentials');
 
@@ -229,8 +229,8 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfAggreg
     id: `pcf_aggregate-${caseId}`,
     type: 'pcf_aggregate',
     caseId,
-    issuerParty: 'hunggang',
-    holderParty: 'hunggang',
+    issuerParty: 'fab',
+    holderParty: 'fab',
     sdJwt,
     payload,
     statusIdx,
@@ -251,8 +251,8 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfAggreg
     issuedAt: agg.issued_at,
     validFrom: agg.valid_from,
     validUntil: agg.valid_until,
-    issuerParty: 'hunggang',
-    holderParty: 'hunggang',
+    issuerParty: 'fab',
+    holderParty: 'fab',
     statusIdx,
     statusUri,
     contractCarbonMax: seed.transaction.contract_carbon_max,

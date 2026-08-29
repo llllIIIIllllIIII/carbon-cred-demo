@@ -3,7 +3,7 @@
  *   POST /api/issue/upstream — 經 server/keys.ts 載入 Thép Việt sandbox LE AID 鑰簽 pcf_upstream;
  *     機密欄僅 commitment hash;簽發結果寫入 credentials 表。**冪等**(M2 修正,見下)。
  *   POST /api/creds/verify — Tab 1 demo 用之通用 SD-JWT 驗證(僅簽章 + 揭露完整性;
- *     Token Status List/vLEI 鏈屬幕 3 Bruck 端管線,不在此檔範圍)。
+ *     Token Status List/vLEI 鏈屬幕 3 Brand 端管線,不在此檔範圍)。
  *   POST /api/creds/tamper-demo — 竄改 payload 1 byte,供前端接著打 /api/creds/verify
  *     展示 DoD 要求的失敗畫面(藍圖:133)。
  * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / issuePcfUpstream 取得。
@@ -25,7 +25,7 @@
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
-import { issuePcfUpstream } from '../creds/pcfUpstream';
+import { issuePcfUpstream } from '../creds/tcCarbonUpstream';
 import { verifyCompactSdJwt } from '../creds/verifier';
 import { tamperPayloadByte } from '../creds/tamper';
 import { getCredential, insertCredentialIfAbsent } from '../creds/store';

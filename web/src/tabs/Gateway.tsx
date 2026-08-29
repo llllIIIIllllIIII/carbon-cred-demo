@@ -98,7 +98,7 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
 
   return (
     <section>
-      <LeiBadge role={manifest?.hunggang} fallback="鴻鋼精密扣件" />
+      <LeiBadge role={manifest?.fab} fallback="鴻鋼精密扣件" />
       <h2>鴻鋼閘道 · 聚合簽發(幕 2)</h2>
       <p style={{ color: '#666' }}>
         鴻鋼以持有者身分讀上游 pcf_upstream 的完整客戶層(它是買方,拿得到)、驗過簽章之後,程式計算自身產品(六角螺栓 M12)的聚合碳足跡並簽發
@@ -141,7 +141,7 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
               precursor_ref 僅為上游憑證的 id + hash 兩個欄位——不含上游任何明細(direct/indirect/生產路線等)。
             </p>
             <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#888' }}>
-              pcf_aggregate 完整簽章 token 是鴻鋼內部簽發物,不由本端點對外交付——跨組織揭露一律走 Bruck
+              pcf_aggregate 完整簽章 token 是鴻鋼內部簽發物,不由本端點對外交付——跨組織揭露一律走 Brand
               Agent 的 <code>/api/disclose</code>(mandate + Cedar 逐 claim + 閘道 receipt)。
             </p>
           </div>
@@ -153,11 +153,11 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
           Gateway 自身持有的 local state;底部 AuditStrip 仍以既有游標輪詢獨立顯示新事件。 */}
       <h3 style={{ marginTop: 32 }}>越界攔截判定(幕 4)· Cedar 決策面板</h3>
       {!lastDisclose ? (
-        <p style={{ color: '#666' }}>尚無查驗請求——請至「Bruck Agent」分頁按「發出查驗請求」或「加碼索取 machine_energy」。</p>
+        <p style={{ color: '#666' }}>尚無查驗請求——請至「Brand Agent」分頁按「發出查驗請求」或「加碼索取 machine_energy」。</p>
       ) : (
         <>
           <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: '8px 12px', maxWidth: 640, background: '#f7f9ff', fontSize: 13 }}>
-            請求收件匣 ▸ #req-{lastDisclose.auditSeq ?? '?'} from Bruck-Agent · claims×{lastDisclose.requestedClaims.length} · nonce{' '}
+            請求收件匣 ▸ #req-{lastDisclose.auditSeq ?? '?'} from Brand-Agent · claims×{lastDisclose.requestedClaims.length} · nonce{' '}
             {lastDisclose.nonce.slice(0, 8)}… · 案{lastDisclose.caseId}
           </div>
 

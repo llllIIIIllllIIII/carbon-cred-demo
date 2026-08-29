@@ -109,7 +109,7 @@ function denyWithAudit(
 /**
  * 驗 mandate JWT 簽章 + iss/aud/exp/jti。
  *
- * M2 修正(C1 同源):簽發者必須是該 mandate 的預期 ECR 角色(M1=鴻鋼財務主管、M2=Bruck 永續長,
+ * M2 修正(C1 同源):簽發者必須是該 mandate 的預期 ECR 角色(M1=鴻鋼財務主管、M2=Brand 永續長,
  * AID 動態自 manifest 取)。舊版只給 jose {audience},且「header.kid 取鑰」與「payload.iss」從不
  * 互相校驗——manifest 內任何一把鑰(甚至法人 LE 鑰)都能簽出一張被接受的委任狀。此處先把 kid
  * 釘死在預期角色 AID(決定用哪把公鑰驗章),再以 jose issuer 選項要求 payload.iss 等於同一 AID。
@@ -234,7 +234,7 @@ async function verifyAggregateForDisclosure(
   const payload = sig.payload as unknown as Record<string, unknown>;
 
   // vct↔issuer 綁定:pcf_aggregate 只認鴻鋼 LE AID,且以實際驗章鑰(sig.kid)為準,payload.iss 不得脫鉤。
-  const expectedAid = manifest.hunggang?.aid;
+  const expectedAid = manifest.fab?.aid;
   if (payload.vct !== PCF_AGGREGATE_VCT || !expectedAid || sig.kid !== expectedAid || payload.iss !== sig.kid) {
     return { ok: false, reasonCode: CODES.VCT_ISSUER_UNAUTHORIZED, detail: `vct/iss/kid 綁定不符(vct=${String(payload.vct)} kid=${String(sig.kid)})` };
   }
@@ -253,11 +253,11 @@ async function verifyAggregateForDisclosure(
 
 /**
  * F4:閘道(鴻鋼 LE 鑰)對每次 PERMIT 簽出 receipt——綁 presentation_hash + mandate_jti +
- * request_nonce + audience(Bruck 驗證方)+ issued_at。Bruck 端驗此 receipt(簽章 + 綁定值一致 +
+ * request_nonce + audience(Brand 驗證方)+ issued_at。Brand 端驗此 receipt(簽章 + 綁定值一致 +
  * 新鮮度),使「擷取的 presentation 換一個 request_nonce/配對另一張相容 mandate 重放」被抓。
  */
 async function issueGatewayReceipt(args: { presentation: string; mandateJti: string; requestNonce: string; nowMs: number }): Promise<string> {
-  const key = loadSandboxKey('hunggang');
+  const key = loadSandboxKey('fab');
   const presentationHash = crypto.createHash('sha256').update(args.presentation).digest('hex');
   return new SignJWT({ presentation_hash: presentationHash, mandate_jti: args.mandateJti, request_nonce: args.requestNonce })
     .setProtectedHeader({ alg: 'EdDSA', typ: RECEIPT_TYP, kid: key.kid })
@@ -326,7 +326,7 @@ export async function processDiscloseRequest(
   //         URI 與被查清單一致才讀 bit)。閘道為發布方,用 readFreshStatusListToken 取(過 ttl 自動重簽,
   //         使 make dev 長時間執行仍拿到新鮮清單)。
   const manifest = readManifest();
-  const statusIssuerKey = manifest ? resolvePublicKeyFromManifest(manifest)(manifest.hunggang.aid) : undefined;
+  const statusIssuerKey = manifest ? resolvePublicKeyFromManifest(manifest)(manifest.fab.aid) : undefined;
   const mandateStatusListToken = await readFreshStatusListToken('mandates', nowMs);
   const mandateStatusUri = mandatePayload.status?.status_list?.uri;
   if (!manifest || !statusIssuerKey || !mandateStatusListToken || mandateStatusUri !== statusListUri('mandates')) {
@@ -440,7 +440,7 @@ export async function processDiscloseRequest(
     if (isSelectableDisclosure(claim)) presentationFrame[claim] = true;
   }
   const presentation = await presentSelectedDisclosures(aggRow.sd_jwt, presentationFrame as never);
-  // F4:綁定本次 presentation 的閘道 receipt(隨 presentation 回傳,供 Bruck 端驗證)。
+  // F4:綁定本次 presentation 的閘道 receipt(隨 presentation 回傳,供 Brand 端驗證)。
   const receipt = await issueGatewayReceipt({
     presentation,
     mandateJti: mandateRow.jti,

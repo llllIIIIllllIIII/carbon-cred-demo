@@ -5,7 +5,7 @@ PRAGMA foreign_keys = ON;
 
 -- 1) 參與方(自 data/vlei/manifest.json 灌入;不寫死 SAID)
 CREATE TABLE IF NOT EXISTS parties (
-  id            TEXT PRIMARY KEY,          -- 角色鍵:thepviet / hunggang / bruck / taiwanverify / hunggang_cfo / bruck_cso
+  id            TEXT PRIMARY KEY,          -- 角色鍵:yarn / fab / brand / cb / fab_cfo / brand_cso
   kind          TEXT NOT NULL,             -- 'le' | 'ecr'
   alias         TEXT NOT NULL,             -- sandbox actor alias
   legal_name    TEXT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS mandates (
   id            TEXT PRIMARY KEY,          -- 'M1' | 'M2'
   jti           TEXT NOT NULL UNIQUE,      -- mandate 唯一 ID(防偽引用)
   issuer_party  TEXT NOT NULL REFERENCES parties(id),
-  aud           TEXT NOT NULL,             -- 受眾(hunggang-gateway)
+  aud           TEXT NOT NULL,             -- 受眾(fab-gateway)
   purpose       TEXT,
   agent_id      TEXT,
   delegate_kid  TEXT NOT NULL,             -- 綁定之 workload 公鑰 kid

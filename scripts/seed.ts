@@ -31,9 +31,9 @@ async function main() {
   const seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf-8'));
 
   const kids = ensureWorkloadKeys();
-  console.log(`workload 鑰:hunggang-workload kid=${kids['hunggang-workload'].slice(0, 12)}… / bruck-workload kid=${kids['bruck-workload'].slice(0, 12)}…`);
+  console.log(`workload 鑰:fab-workload kid=${kids['fab-workload'].slice(0, 12)}… / brand-workload kid=${kids['brand-workload'].slice(0, 12)}…`);
 
-  // H3:匯出 .vlei/state.json 的公開子集(去 seed/next_seed)供 Bruck 端 sandbox verify 使用,
+  // H3:匯出 .vlei/state.json 的公開子集(去 seed/next_seed)供 Brand 端 sandbox verify 使用,
   // 使驗證端只讀 data/vlei/(CLAUDE.md:25);唯一讀 state.json 的模組仍是 server/keys.ts。
   const publicStateFile = writePublicVleiState();
   console.log(`vLEI 公開狀態(不含私鑰種子):${path.relative(ROOT, publicStateFile)}`);

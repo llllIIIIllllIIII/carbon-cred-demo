@@ -8,7 +8,7 @@
  * 一旦某張 mandate 被誤設(或未來新增第三張),分項就會被挑出來、下游即可用加減還原上游
  * (H2 的算術洩漏)。故在「挑 disclosure」這一層再擋一次:presentSelectedDisclosures 硬拒,
  * 不看 mandate 寫什麼。presentRawDisclosures 為不套用 deny-list 的低階入口,僅供測試模擬
- * 「閘道被繞過/惡意 presenter」以驗證 Bruck 端雙向約束仍能攔下,正式路徑不得使用。
+ * 「閘道被繞過/惡意 presenter」以驗證 Brand 端雙向約束仍能攔下,正式路徑不得使用。
  */
 import { SDJwtVcInstance, type SdJwtVcPayload } from '@sd-jwt/sd-jwt-vc';
 import type { PresentationFrame } from '@sd-jwt/core';

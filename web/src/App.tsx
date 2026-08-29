@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ThepViet } from './tabs/ThepViet';
+import { Yarn } from './tabs/Yarn';
 import { Gateway } from './tabs/Gateway';
-import { BruckAgent } from './tabs/BruckAgent';
+import { BrandAgent } from './tabs/BrandAgent';
 import { Audit } from './tabs/Audit';
 import { AuditStrip } from './components/AuditStrip';
 
@@ -35,16 +35,16 @@ export interface DiscloseEvent {
 }
 
 const TABS = [
-  { id: 'thepviet', label: '越南廠' },
+  { id: 'yarn', label: '越南廠' },
   { id: 'gateway', label: '鴻鋼閘道' },
-  { id: 'bruck', label: 'Bruck Agent' },
+  { id: 'brand', label: 'Brand Agent' },
   { id: 'audit', label: '稽核與撤銷' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
 
 export function App() {
-  const [tab, setTab] = useState<TabId>('thepviet');
+  const [tab, setTab] = useState<TabId>('yarn');
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [lastDisclose, setLastDisclose] = useState<DiscloseEvent | null>(null);
 
@@ -76,9 +76,9 @@ export function App() {
         ))}
       </nav>
       <main style={{ flex: 1, padding: 16 }}>
-        {tab === 'thepviet' && <ThepViet manifest={manifest} />}
+        {tab === 'yarn' && <Yarn manifest={manifest} />}
         {tab === 'gateway' && <Gateway manifest={manifest} lastDisclose={lastDisclose} />}
-        {tab === 'bruck' && <BruckAgent manifest={manifest} onDisclose={setLastDisclose} />}
+        {tab === 'brand' && <BrandAgent manifest={manifest} onDisclose={setLastDisclose} />}
         {tab === 'audit' && <Audit manifest={manifest} />}
       </main>
       <AuditStrip />

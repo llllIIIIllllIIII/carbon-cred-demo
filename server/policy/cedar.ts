@@ -22,7 +22,7 @@ function readPolicyText(id: 'p1' | 'p2'): string {
   return fs.readFileSync(path.join(POLICIES_DIR, `${id}.cedar`), 'utf-8');
 }
 
-const PRINCIPAL_UID = { type: 'Agent', id: 'bruck-agent-2' };
+const PRINCIPAL_UID = { type: 'Agent', id: 'brand-agent-2' };
 const ACTION_UID = { type: 'Action', id: 'DiscloseClaim' };
 
 export interface ClaimAuthzInput {

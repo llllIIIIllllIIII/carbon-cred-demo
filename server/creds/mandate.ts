@@ -1,8 +1,8 @@
 /**
  * M1/M2 mandate 簽發(幕 3 前置;架構決策 §4:POST /api/mandates)。
  * 格式:compact signed JWT(jose,EdDSA),header { typ:"mandate+jwt", alg:"EdDSA", kid }。
- * 簽署者經 server/keys.ts 之 sandbox ECR 鑰(M1=鴻鋼財務主管、M2=Bruck 永續長);
- * delegate_kid 綁定對應 workload 公鑰(M1=hunggang-workload、M2=bruck-workload)。
+ * 簽署者經 server/keys.ts 之 sandbox ECR 鑰(M1=鴻鋼財務主管、M2=Brand 永續長);
+ * delegate_kid 綁定對應 workload 公鑰(M1=fab-workload、M2=brand-workload)。
  *
  * M2 allowed_claims:幕 3 disclose 消費對象是 pcf_aggregate,而規格v2:155-157 列的是
  * pcf_upstream 欄位名,故做欄位映射後採 server/policy/claims.ts 之 M2_ALLOWED_CLAIMS——
@@ -21,17 +21,17 @@ import { PCF_UPSTREAM_PUBLIC_FIELDS, PCF_UPSTREAM_CUSTOMS_SD_FIELDS } from '../.
 import type { MandateId, MandatePayload } from '../../shared/types';
 
 /** disclose 閘道之受眾(M1/M2 皆以此為 aud;impl-spec §2 request_jws payload 亦引用同一閘道)。 */
-export const GATEWAY_AUD = 'hunggang-gateway';
+export const GATEWAY_AUD = 'fab-gateway';
 
 /**
  * F4(Codex adversarial review)閘道 PERMIT receipt 之常數——閘道(鴻鋼)以 LE 鑰對每次 PERMIT
  * 簽出一份 receipt,綁定 presentation_hash + mandate_jti + request_nonce + audience + issued_at。
- * Bruck 端(/api/verify 與 verify-offline)以此 receipt 抓「擷取的 presentation 換 nonce/配對他 mandate
- * 重放」。常數放在無 DB 依賴的 mandate.ts,供閘道(discloseGateway)簽章端與 Bruck 驗證端共用同一定義。
+ * Brand 端(/api/verify 與 verify-offline)以此 receipt 抓「擷取的 presentation 換 nonce/配對他 mandate
+ * 重放」。常數放在無 DB 依賴的 mandate.ts,供閘道(discloseGateway)簽章端與 Brand 驗證端共用同一定義。
  */
 export const RECEIPT_TYP = 'gateway-receipt+jwt';
-/** receipt 受眾:Bruck 驗證方——綁 audience,使發給 Bruck 的 receipt 無法挪作他用。 */
-export const RECEIPT_AUDIENCE = 'bruck-verifier';
+/** receipt 受眾:Brand 驗證方——綁 audience,使發給 Brand 的 receipt 無法挪作他用。 */
+export const RECEIPT_AUDIENCE = 'brand-verifier';
 
 /** mandates Token Status List 之固定 idx(獨立於 credentials 清單,見 impl-spec §0):M1=0、M2=1。 */
 export const MANDATE_STATUS_IDX: Record<MandateId, number> = { M1: 0, M2: 1 };
@@ -41,8 +41,8 @@ export const MANDATE_STATUS_IDX: Record<MandateId, number> = { M1: 0, M2: 1 };
  * 與實際驗章鑰)。角色鍵同時是 server/keys.ts 的 SandboxRole 與 manifest 的角色鍵。
  */
 export const MANDATE_ISSUER_ROLE: Record<MandateId, SandboxRole> = {
-  M1: 'hunggang_cfo', // 鴻鋼財務主管 ECR
-  M2: 'bruck_cso', // Bruck 永續長 ECR
+  M1: 'fab_cfo', // 鴻鋼財務主管 ECR
+  M2: 'brand_cso', // Brand 永續長 ECR
 };
 
 /** L2:mandate 自簽發日起至少保有的效期天數(避免敘事日期過期後 demo 全面 MANDATE_EXPIRED)。 */
@@ -73,7 +73,7 @@ const MANDATE_DEFS: Record<MandateId, MandateDefinition> = {
   // M1(規格v2 §5.1;幕 3/4 無直接依賴,主要供幕 5 放行管線消費)。
   M1: {
     issuerRole: MANDATE_ISSUER_ROLE.M1,
-    delegateName: 'hunggang-workload',
+    delegateName: 'fab-workload',
     allowedClaims: [...PCF_UPSTREAM_PUBLIC_FIELDS.filter((f) => !f.endsWith('_hash')), ...PCF_UPSTREAM_CUSTOMS_SD_FIELDS],
     policyVersion: 'pol-2026-08-v2',
     validFrom: '2026-08-01',
@@ -88,7 +88,7 @@ const MANDATE_DEFS: Record<MandateId, MandateDefinition> = {
   // M2(規格v2 §5.2;幕 3/4 主線——Agent-2 出示查驗請求之委任狀)。
   M2: {
     issuerRole: MANDATE_ISSUER_ROLE.M2,
-    delegateName: 'bruck-workload',
+    delegateName: 'brand-workload',
     allowedClaims: [...M2_ALLOWED_CLAIMS],
     policyVersion: 'pol-2026-08-v2',
     validFrom: '2026-08-01',

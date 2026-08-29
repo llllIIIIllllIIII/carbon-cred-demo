@@ -1,5 +1,5 @@
 /**
- * Bruck 端驗證核心(幕 3 DoD)——POST /api/verify 與 scripts/verify-offline.ts 共用同一函式,
+ * Brand 端驗證核心(幕 3 DoD)——POST /api/verify 與 scripts/verify-offline.ts 共用同一函式,
  * 避免雙寫(impl-spec §3)。
  *
  * 鐵則(CLAUDE.md:25):只讀 token、manifest 公鑰、data/vlei/、data/status/;不得呼叫閘道 API、
@@ -32,19 +32,19 @@ import { verifyCompactSdJwt } from './verifier';
 import { resolvePublicKeyFromManifest } from '../manifest';
 import { checkStatusBit, readStatusListToken, statusListUri } from '../statuslist';
 import { PCF_AGGREGATE_VCT } from './pcfAggregate';
-import { PCF_UPSTREAM_VCT } from './pcfUpstream';
+import { PCF_UPSTREAM_VCT } from './tcCarbonUpstream';
 import { GATEWAY_AUD, RECEIPT_TYP, RECEIPT_AUDIENCE } from './mandate';
 import { CODES, type ReasonCode } from '../../shared/codes';
 import type { Manifest, MandatePayload } from '../../shared/types';
 
 /** vct → 唯一被授權簽發該 vct 的角色(manifest 鍵)——遺留(a)之綁定表,動態查 AID,不硬編字面值。 */
 const VCT_ISSUER_ROLE: Record<string, string> = {
-  [PCF_AGGREGATE_VCT]: 'hunggang',
-  [PCF_UPSTREAM_VCT]: 'thepviet',
+  [PCF_AGGREGATE_VCT]: 'fab',
+  [PCF_UPSTREAM_VCT]: 'yarn',
 };
 
-/** M2 mandate 之唯一合法簽發角色(Bruck 永續長 ECR;M2 修正:mandate iss 必須綁預期角色)。 */
-const M2_ISSUER_ROLE = 'bruck_cso';
+/** M2 mandate 之唯一合法簽發角色(Brand 永續長 ECR;M2 修正:mandate iss 必須綁預期角色)。 */
+const M2_ISSUER_ROLE = 'brand_cso';
 
 /**
  * F8(Codex adversarial review):協定保留 claim——非應用層 claim,不與 mandate.allowed_claims 比對。
@@ -118,7 +118,7 @@ export function verifyVleiChainSandbox(credentialSaid: string, opts: { timeoutMs
 
 /**
  * 驗 M2 mandate_jwt 簽章(供第 5 項雙向約束比對 allowed_claims;僅供本地比對用,不重跑完整閘道管線)。
- * M2 修正(C1 同源):簽章鑰必須是 Bruck 永續長 ECR AID(manifest 動態取),且 payload.iss 必須
+ * M2 修正(C1 同源):簽章鑰必須是 Brand 永續長 ECR AID(manifest 動態取),且 payload.iss 必須
  * 等於該 AID——header.kid 取鑰卻不校驗 iss,等於讓任何 manifest 內的鑰都能簽出「M2 委任狀」。
  */
 async function verifyMandateForComparison(
@@ -129,12 +129,12 @@ async function verifyMandateForComparison(
   if (!expectedIssuerAid) return { ok: false, error: `manifest 缺少 ${M2_ISSUER_ROLE} 角色,無法確認 M2 mandate 簽發者` };
   try {
     const header = decodeProtectedHeader(mandateJwt);
-    // F5:typ 必須為 "mandate+jwt"(不驗 typ 等於接受任何 Bruck-CSO 鑰簽出的 JWT 冒充委任狀)。
+    // F5:typ 必須為 "mandate+jwt"(不驗 typ 等於接受任何 Brand-CSO 鑰簽出的 JWT 冒充委任狀)。
     if (header.typ !== 'mandate+jwt') {
       return { ok: false, error: `M2 mandate header.typ 不是 "mandate+jwt"(typ=${header.typ ?? '(無)'})` };
     }
     if (header.kid !== expectedIssuerAid) {
-      return { ok: false, error: `M2 mandate 簽章鑰(kid=${header.kid ?? '(無)'})非 Bruck 永續長 ECR AID(${expectedIssuerAid})` };
+      return { ok: false, error: `M2 mandate 簽章鑰(kid=${header.kid ?? '(無)'})非 Brand 永續長 ECR AID(${expectedIssuerAid})` };
     }
     const key = resolvePublicKeyFromManifest(manifest)(expectedIssuerAid);
     if (!key) return { ok: false, error: `找不到 mandate 簽發者公鑰(kid=${expectedIssuerAid})` };
@@ -161,8 +161,8 @@ async function verifyGatewayReceipt(
   ctx: { presentationSdJwt: string; mandateJti: string; manifest: Manifest; nowMs: number },
 ): Promise<{ ok: boolean; error?: string }> {
   if (!receipt) return { ok: false, error: '缺少閘道 receipt(無 key-binding 的裸 presentation 不予採信;重放/擷取無法憑此通過)' };
-  const gatewayAid = ctx.manifest.hunggang?.aid;
-  if (!gatewayAid) return { ok: false, error: 'manifest 缺 hunggang 閘道角色' };
+  const gatewayAid = ctx.manifest.fab?.aid;
+  if (!gatewayAid) return { ok: false, error: 'manifest 缺 fab 閘道角色' };
   const key = resolvePublicKeyFromManifest(ctx.manifest)(gatewayAid);
   if (!key) return { ok: false, error: '找不到閘道公鑰' };
   let payload: Record<string, unknown>;
@@ -191,7 +191,7 @@ async function verifyGatewayReceipt(
   return { ok: true };
 }
 
-/** Bruck 端驗證主流程——依序執行 5 項檢查,任一失敗即回傳(已完成之檢查全數附在 checks 內)。 */
+/** Brand 端驗證主流程——依序執行 5 項檢查,任一失敗即回傳(已完成之檢查全數附在 checks 內)。 */
 export async function verifyPresentation(input: VerifyPresentationInput): Promise<VerifyPresentationResult> {
   const checks: VerifyCheck[] = [];
   const nowMs = input.now ?? Date.now();
@@ -245,7 +245,7 @@ export async function verifyPresentation(input: VerifyPresentationInput): Promis
   // 4) Status List(credentials 清單;F6:傳入預期清單 URI + now,並要求 credential 的 status 參照 URI
   //    與被查清單一致——同鑰簽的 mandates token 不得冒充 credentials token,陳舊 token 亦拒)。
   const statusEntry = (payload.status as { status_list?: { idx?: number; uri?: string } } | undefined)?.status_list;
-  const statusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.hunggang.aid);
+  const statusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.fab.aid);
   const credentialsListToken = readStatusListToken('credentials');
   let statusOk = false;
   let statusDetail: string | undefined;
@@ -275,7 +275,7 @@ export async function verifyPresentation(input: VerifyPresentationInput): Promis
   // 6) F5:mandate 撤銷狀態(mandates Token Status List;被撤 mandate 不得再授權任何揭露)。
   const mStatus = mandateResult.payload.status?.status_list;
   const mandatesListToken = readStatusListToken('mandates');
-  const mandateStatusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.hunggang.aid);
+  const mandateStatusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.fab.aid);
   let mandateStatusOk = false;
   let mandateStatusDetail: string | undefined;
   if (mStatus?.idx == null || mStatus.uri !== statusListUri('mandates') || !mandateStatusIssuerKey || !mandatesListToken) {

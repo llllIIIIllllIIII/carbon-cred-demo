@@ -6,7 +6,7 @@
  * entry_hash = sha256(prev_hash ‖ payload_hash ‖ ts)(hex),
  * 其中 payload_hash = sha256(event_type ‖ '\n' ‖ payload_json)——
  * event_type 一併納入雜湊,防止改寫事件語意而鏈驗證仍過(Codex 審查定案);
- * sig = hunggang-workload 鑰對 entry_hash 之 Ed25519 簽章(base64url)。
+ * sig = fab-workload 鑰對 entry_hash 之 Ed25519 簽章(base64url)。
  */
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -26,7 +26,7 @@ export function appendAudit(db: Database.Database, eventType: string, payload: u
   const payloadJson = JSON.stringify(payload ?? {});
   const payloadHash = crypto.createHash('sha256').update(`${eventType}\n${payloadJson}`).digest('hex');
   const entryHash = crypto.createHash('sha256').update(prevHash + payloadHash + ts).digest('hex');
-  const key = loadWorkloadKey('hunggang-workload');
+  const key = loadWorkloadKey('fab-workload');
   const sig = crypto.sign(null, Buffer.from(entryHash), key.privateKey).toString('base64url');
   const r = db
     .prepare(

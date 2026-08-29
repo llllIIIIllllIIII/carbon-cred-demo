@@ -45,7 +45,7 @@ export async function buildAndWriteStatusList(name: StatusListName, statuses?: n
     { sub: statusListUri(name), iat: now, exp: now + 60 * 60 * 24 * 180, ttl: STATUS_TTL_SECONDS },
     { alg: 'EdDSA', typ: JWT_STATUS_LIST_TYPE },
   );
-  const signer = loadSandboxKey('hunggang');
+  const signer = loadSandboxKey('fab');
   const jwt = await new SignJWT(payload as Record<string, unknown>)
     .setProtectedHeader({ ...header, kid: signer.kid })
     .sign(signer.privateKey);
@@ -75,7 +75,7 @@ export interface CheckStatusBitOptions {
 }
 
 /**
- * 驗證方共用入口(幕 3 Bruck 端 / 閘道 mandate/credential 撤銷查驗皆呼叫此函式)——
+ * 驗證方共用入口(幕 3 Brand 端 / 閘道 mandate/credential 撤銷查驗皆呼叫此函式)——
  * 依序:
  *   1. 先驗 compact JWS 簽章(issuerPublicKey,取自 manifest 公開材料),簽章不過直接回錯。
  *   2. header.typ 必須為 "statuslist+jwt"(L3:不驗 typ 等於接受任何同鑰簽出的 JWT 冒充狀態清單)。
@@ -169,7 +169,7 @@ function statusTokenIsStale(token: string, nowSec: number, skewSec = STATUS_CLOC
  * (保留現有 bit 狀態、只換新 iat)再回傳,使 `make dev` 長時間執行後 disclose/verify 仍拿到新鮮清單
  * (F6 的 ttl 新鮮度檢查因此不會把 demo 卡死)。
  *
- * ⚠ Bruck 端(驗證方,server/creds/verifyPresentation.ts / scripts/verify-offline.ts)**不得**呼叫本函式:
+ * ⚠ Brand 端(驗證方,server/creds/verifyPresentation.ts / scripts/verify-offline.ts)**不得**呼叫本函式:
  * 驗證方不持鑰、不簽章(CLAUDE.md:25),只讀 readStatusListToken() 拿發布方已簽好的清單。
  */
 export async function readFreshStatusListToken(name: StatusListName, nowMs: number = Date.now()): Promise<string | null> {

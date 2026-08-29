@@ -30,16 +30,16 @@ const ACTOR_PRIVATE_FIELDS = ['seed', 'next_seed'] as const;
 
 /** 允許取用的 sandbox 角色 → actor alias(presign-vlei.sh 同步維護)。 */
 export const SANDBOX_ROLES = {
-  thepviet: 'thepviet', // Thép Việt LE 鑰:幕 1 簽 pcf_upstream
-  hunggang: 'hunggang', // 鴻鋼 LE 鑰:幕 2 簽 pcf_aggregate;Status List Token 簽章(閘道為清單發布方)
-  bruck: 'bruck', // Bruck LE(驗證側身分錨定)
-  taiwanverify: 'taiwanverify', // 台驗 LE 鑰:rba_dcc 與(選配)查證聲明 VC
-  hunggang_cfo: 'hunggang-cfo', // 鴻鋼財務主管 ECR 鑰:簽 M1、幕 5 人工放行
-  bruck_cso: 'bruck-cso', // Bruck 永續長 ECR 鑰:簽 M2
+  yarn: 'yarn', // Thép Việt LE 鑰:幕 1 簽 pcf_upstream
+  fab: 'fab', // 鴻鋼 LE 鑰:幕 2 簽 pcf_aggregate;Status List Token 簽章(閘道為清單發布方)
+  brand: 'brand', // Brand LE(驗證側身分錨定)
+  cb: 'cb', // 台驗 LE 鑰:rba_dcc 與(選配)查證聲明 VC
+  fab_cfo: 'fab-cfo', // 鴻鋼財務主管 ECR 鑰:簽 M1、幕 5 人工放行
+  brand_cso: 'brand-cso', // Brand 永續長 ECR 鑰:簽 M2
 } as const;
 
 export type SandboxRole = keyof typeof SANDBOX_ROLES;
-export type WorkloadName = 'hunggang-workload' | 'bruck-workload';
+export type WorkloadName = 'fab-workload' | 'brand-workload';
 
 export class KeyLoaderError extends Error {}
 
@@ -90,7 +90,7 @@ function readState(): Record<string, any> {
   }
 }
 
-/** 載入 sandbox 匯出鑰(2 LE + 2 ECR + 台驗/Bruck)。 */
+/** 載入 sandbox 匯出鑰(2 LE + 2 ECR + 台驗/Brand)。 */
 export function loadSandboxKey(role: SandboxRole): SigningKey {
   const alias = SANDBOX_ROLES[role];
   const state = readState();
@@ -109,13 +109,13 @@ export function loadSandboxKey(role: SandboxRole): SigningKey {
 
 /**
  * H3 修法:把 `.vlei/state.json` 的**公開子集**匯出到 data/vlei/public-state/.vlei/state.json,
- * 供 Bruck 端 sandbox verify(child_process)查驗 vLEI 信任鏈時使用。
+ * 供 Brand 端 sandbox verify(child_process)查驗 vLEI 信任鏈時使用。
  *
  * 為何需要:sandbox `verify` 只吃 workspace 狀態檔,但原始狀態檔含每個 actor 的私鑰種子
- * (seed/next_seed);CLAUDE.md:25 限定 Bruck 端只讀 token、manifest 公鑰、data/vlei/、
+ * (seed/next_seed);CLAUDE.md:25 限定 Brand 端只讀 token、manifest 公鑰、data/vlei/、
  * data/status/。本函式剔除 ACTOR_PRIVATE_FIELDS 後另存一份——查驗所需材料(aid/verkey/kel/
  * registries(TEL)/credentials/root_aid)全屬公開材料,驗證強度不變(SAID 重算、簽章驗證、
- * TEL 撤銷狀態一項不少),但 Bruck 端從此不再碰 `.vlei/`。
+ * TEL 撤銷狀態一項不少),但 Brand 端從此不再碰 `.vlei/`。
  *
  * 本函式為 `.vlei/state.json` 的唯一讀取點所在模組(一方一鑰鐵則),由 scripts/seed.ts
  * (make setup / make demo-reset 皆會執行)呼叫;回傳寫出的檔案路徑。
@@ -159,7 +159,7 @@ function jwkThumbprint(x: string): string {
 export function ensureWorkloadKeys(): Record<WorkloadName, string> {
   fs.mkdirSync(KEYS_DIR, { recursive: true });
   const kids = {} as Record<WorkloadName, string>;
-  for (const name of ['hunggang-workload', 'bruck-workload'] as WorkloadName[]) {
+  for (const name of ['fab-workload', 'brand-workload'] as WorkloadName[]) {
     const file = path.join(KEYS_DIR, `${name}.json`);
     if (!fs.existsSync(file)) {
       const { privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -192,7 +192,7 @@ export function loadWorkloadKey(name: WorkloadName): SigningKey {
  * workload 鑰,一律以 DELEGATE_KEY_MISMATCH 處理,不另外分類。
  */
 export function resolveWorkloadPublicKeyByKid(kid: string): crypto.KeyObject | undefined {
-  for (const name of ['hunggang-workload', 'bruck-workload'] as WorkloadName[]) {
+  for (const name of ['fab-workload', 'brand-workload'] as WorkloadName[]) {
     const key = loadWorkloadKey(name);
     if (key.kid === kid) return key.publicKey;
   }

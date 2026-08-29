@@ -71,8 +71,8 @@ export interface PcfUpstreamIssuance {
   issuedAt: string;
   validFrom: string;
   validUntil: string;
-  issuerParty: 'thepviet';
-  holderParty: 'hunggang';
+  issuerParty: 'yarn';
+  holderParty: 'fab';
   statusIdx: number;
   statusUri: string;
 }
@@ -83,7 +83,7 @@ export async function issuePcfUpstream(caseId: PcfUpstreamCaseId): Promise<PcfUp
   const caseData = seed.cases[caseId];
   if (!caseData) throw new Error(`未知案件 case_id=${caseId}(pcf_upstream 僅支援 A/B)`);
   const d = seed.pcf_defaults;
-  const key = loadSandboxKey('thepviet');
+  const key = loadSandboxKey('yarn');
 
   const statusIdx = PCF_UPSTREAM_STATUS_IDX[caseId];
   const statusUri = statusListUri('credentials');
@@ -143,8 +143,8 @@ export async function issuePcfUpstream(caseId: PcfUpstreamCaseId): Promise<PcfUp
     issuedAt: d.issued_at,
     validFrom: d.valid_from,
     validUntil: d.valid_until,
-    issuerParty: 'thepviet',
-    holderParty: 'hunggang',
+    issuerParty: 'yarn',
+    holderParty: 'fab',
     statusIdx,
     statusUri,
   };

@@ -58,7 +58,7 @@ export interface MandatePayload extends MandateBase {
 }
 
 /**
- * disclose request(幕 3/4)之 compact JWS payload——由 bruck-workload(或 hunggang-workload)鑰
+ * disclose request(幕 3/4)之 compact JWS payload——由 brand-workload(或 fab-workload)鑰
  * 簽章,header.kid 須等於對應 mandate.delegate_kid(impl-spec §2)。
  */
 export interface DiscloseRequestPayload {

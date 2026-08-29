@@ -33,7 +33,7 @@ interface DiscloseSuccessResponse {
   decision: 'PERMIT';
   policy_id: 'P1';
   presentation: string;
-  /** F4:閘道 receipt——Bruck 端本地驗證(/api/verify)以此驗 key-binding。 */
+  /** F4:閘道 receipt——Brand 端本地驗證(/api/verify)以此驗 key-binding。 */
   receipt: string;
   mandate_id: string;
   case_id: CaseId;
@@ -119,8 +119,8 @@ function DecisionBadge({ decision }: { decision: 'PERMIT' | 'DENY' | 'REPLAY_DET
   );
 }
 
-/** Tab 3 · Bruck Agent(幕 3 委任查驗 ★核心 ＋ 幕 4 越界攔截 ★高潮 主場)。 */
-export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null; onDisclose: (e: DiscloseEvent) => void }) {
+/** Tab 3 · Brand Agent(幕 3 委任查驗 ★核心 ＋ 幕 4 越界攔截 ★高潮 主場)。 */
+export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null; onDisclose: (e: DiscloseEvent) => void }) {
   const [caseId, setCaseId] = useState<CaseId>('A');
   const [mandateJwt, setMandateJwt] = useState<string | null>(null);
   const [mandateSummary, setMandateSummary] = useState<MandateSummary | null>(null);
@@ -189,7 +189,7 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
     try {
       const requestedClaims = overreach ? [...mandateSummary.allowed_claims, 'machine_energy'] : [...mandateSummary.allowed_claims];
 
-      // 「workload 簽章取得」定案:瀏覽器不得持有 bruck-workload 私鑰,經 demo 輔助 route
+      // 「workload 簽章取得」定案:瀏覽器不得持有 brand-workload 私鑰,經 demo 輔助 route
       // 代簽 request_jws(仍走 POST /api/disclose 完整驗證管線,不繞過任何驗證)。
       const signRes = await fetch('/api/demo/sign-disclose-request', {
         method: 'POST',
@@ -251,8 +251,8 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
 
   return (
     <section>
-      <LeiBadge role={manifest?.bruck} fallback="Bruck & Söhne GmbH" />
-      <h2>Bruck Agent · 委任查驗(幕 3)＋越界攔截(幕 4)</h2>
+      <LeiBadge role={manifest?.brand} fallback="Brand & Söhne GmbH" />
+      <h2>Brand Agent · 委任查驗(幕 3)＋越界攔截(幕 4)</h2>
       <p style={{ color: '#666' }}>
         Agent-2 持 M2 mandate 出示查驗請求——鴻鋼閘道只回 mandate 範圍內的欄位;若加碼索取機密欄位,閘道 Cedar P2 一律拒絕,不看 mandate 寫什麼。
       </p>
@@ -260,7 +260,7 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
       {mandateError && <p style={{ color: 'crimson' }}>{mandateError}</p>}
 
       <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: 16, marginTop: 12, background: '#fff', maxWidth: 640 }}>
-        <h3 style={{ marginTop: 0 }}>M2 委任狀(Bruck 永續長 ECR 鑰簽發)</h3>
+        <h3 style={{ marginTop: 0 }}>M2 委任狀(Brand 永續長 ECR 鑰簽發)</h3>
         {mandateBusy && !mandateSummary && <p>簽發中…</p>}
         {mandateSummary && (
           <>
@@ -274,7 +274,7 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
             <Row label="效期" value={`${formatValue(mandateExtra.valid_from)} ~ ${mandateSummary.valid_until}`} />
             <Row label="mandate_nonce" value={mandateExtra.mandate_nonce} />
             <Row label="policy_version" value={mandateExtra.policy_version} />
-            <Row label="delegate_kid(bruck-workload 公鑰摘要)" value={`${String(mandateSummary.delegate_kid).slice(0, 16)}…`} />
+            <Row label="delegate_kid(brand-workload 公鑰摘要)" value={`${String(mandateSummary.delegate_kid).slice(0, 16)}…`} />
             <Row label="Token Status List" value={`idx=${mandateSummary.status.idx}`} />
             <details style={{ marginTop: 10 }}>
               <summary style={{ cursor: 'pointer' }}>原始 mandate_jwt</summary>
@@ -341,7 +341,7 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
       {outcome?.decision === 'PERMIT' && verifyResult && (
         <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: 16, marginTop: 12, background: '#fff', maxWidth: 640 }}>
           <h3 style={{ marginTop: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            Bruck 端本地驗證
+            Brand 端本地驗證
             <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#0d1b2a', color: '#cde3ff' }}>OFFLINE</span>
           </h3>
           <p style={{ fontSize: 12, color: '#666', marginTop: 0 }}>
