@@ -27,6 +27,8 @@
 - vendor/ 唯讀;.vlei/ 與 data/keys/ 永不進版控。
 - 介面文案繁體中文;理由碼用 shared/codes.ts 的英文常數。
 - 每幕完成即執行 docs 藍圖對應的 DoD 檢查(藍圖路徑僅示意,目錄以架構 §2 為準)。
+- **Phase 收尾流程(2026-08-29 立)**:每完成一個大 phase,**push 之前必經 `/codex:review`**(提示使用者執行,或經同意後代跑);逐項評估審查發現——需修正/優化者修完並使 `make test` 全綠(必要時加回歸鎖入 test.ts),不修者在回覆寫明理由;審查發現處理完畢,該 phase 才算結束、才可 push。審查定案(影響後續 phase 的約束)追記到本檔「Codex 審查定案」章節。
+  **遞補**:若 `/codex:review` 回報「無變更可審」(phase 已先 commit、working tree 乾淨)或跑完零發現,不得就此收尾——改跑 `/codex:adversarial-review`(可指定基準與對抗性框架,如審本 phase 的 commit 範圍),以其結果為收尾依據。
 
 ## Phase 0 環境判定(2026-08-29 實測)
 
