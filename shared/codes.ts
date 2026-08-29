@@ -28,9 +28,14 @@ export const CODES = {
 
   // 重放防護
   REPLAY_DETECTED: 'REPLAY_DETECTED',
+  // F4(Codex adversarial review):presentation 無 key-binding,改由閘道簽章 receipt 綁定
+  // presentation_hash+mandate_jti+request_nonce+aud+iat;receipt 缺失/簽章壞/綁定不符/逾新鮮度 → 拒
+  RECEIPT_INVALID: 'RECEIPT_INVALID',
 
   // 憑證層
   CREDENTIAL_REVOKED: 'CREDENTIAL_REVOKED',
+  // F3(Codex adversarial review):disclose 前驗被揭露 aggregate 自身效期,過期/未生效 → 拒
+  CREDENTIAL_EXPIRED: 'CREDENTIAL_EXPIRED',
   CREDENTIAL_SIG_INVALID: 'CREDENTIAL_SIG_INVALID',
   CREDENTIAL_PARSE_ERROR: 'CREDENTIAL_PARSE_ERROR',
   ISSUER_UNKNOWN: 'ISSUER_UNKNOWN',

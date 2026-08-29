@@ -23,6 +23,16 @@ import type { MandateId, MandatePayload } from '../../shared/types';
 /** disclose 閘道之受眾(M1/M2 皆以此為 aud;impl-spec §2 request_jws payload 亦引用同一閘道)。 */
 export const GATEWAY_AUD = 'hunggang-gateway';
 
+/**
+ * F4(Codex adversarial review)閘道 PERMIT receipt 之常數——閘道(鴻鋼)以 LE 鑰對每次 PERMIT
+ * 簽出一份 receipt,綁定 presentation_hash + mandate_jti + request_nonce + audience + issued_at。
+ * Bruck 端(/api/verify 與 verify-offline)以此 receipt 抓「擷取的 presentation 換 nonce/配對他 mandate
+ * 重放」。常數放在無 DB 依賴的 mandate.ts,供閘道(discloseGateway)簽章端與 Bruck 驗證端共用同一定義。
+ */
+export const RECEIPT_TYP = 'gateway-receipt+jwt';
+/** receipt 受眾:Bruck 驗證方——綁 audience,使發給 Bruck 的 receipt 無法挪作他用。 */
+export const RECEIPT_AUDIENCE = 'bruck-verifier';
+
 /** mandates Token Status List 之固定 idx(獨立於 credentials 清單,見 impl-spec §0):M1=0、M2=1。 */
 export const MANDATE_STATUS_IDX: Record<MandateId, number> = { M1: 0, M2: 1 };
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Fastify from 'fastify';
 import { ROOT, openDbIfExists } from './db';
-import { readStatusListToken, STATUS_MEDIA_TYPE, STATUS_LIST_NAMES, type StatusListName } from './statuslist';
+import { readFreshStatusListToken, STATUS_MEDIA_TYPE, STATUS_LIST_NAMES, type StatusListName } from './statuslist';
 import { registerIssueRoutes } from './routes/issue';
 import { registerAggregateRoutes } from './routes/aggregate';
 import { registerMandateRoutes } from './routes/mandates';
@@ -47,7 +47,8 @@ export function buildServer() {
     if (!STATUS_LIST_NAMES.includes(name as StatusListName)) {
       return reply.code(404).send({ error: 'unknown status list' });
     }
-    const token = readStatusListToken(name as StatusListName);
+    // F6:閘道為清單發布方——過 ttl 自動重簽(保留撤銷位元、只換新 iat),使驗證方的新鮮度檢查不會拿到陳舊清單。
+    const token = await readFreshStatusListToken(name as StatusListName);
     if (!token) {
       return reply.code(404).send({ error: 'status list 尚未產生(先跑 make setup)' });
     }

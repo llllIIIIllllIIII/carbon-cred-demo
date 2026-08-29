@@ -17,6 +17,8 @@ export function registerDiscloseRoutes(app: FastifyInstance): void {
           decision: 'PERMIT',
           policy_id: result.policyId,
           presentation: result.presentation,
+          // F4:閘道簽章 receipt——Bruck 端 verify/verify-offline 以此抓重放/配對他 mandate。
+          receipt: result.receipt,
           mandate_id: result.mandateId,
           case_id: result.caseId,
         };

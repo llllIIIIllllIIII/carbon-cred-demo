@@ -8,7 +8,7 @@ import { verifyPresentation } from '../creds/verifyPresentation';
 
 export function registerVerifyRoutes(app: FastifyInstance): void {
   app.post('/api/verify', async (req, reply) => {
-    const body = (req.body ?? {}) as { presentation?: string; mandate_jwt?: string };
+    const body = (req.body ?? {}) as { presentation?: string; mandate_jwt?: string; receipt?: string };
     if (!body.presentation || !body.mandate_jwt) {
       return reply.code(400).send({ error: '缺少 presentation 或 mandate_jwt' });
     }
@@ -20,6 +20,8 @@ export function registerVerifyRoutes(app: FastifyInstance): void {
       presentationSdJwt: body.presentation,
       mandateJwt: body.mandate_jwt,
       manifest,
+      // F4:閘道 receipt(隨 /api/disclose 回傳)——key-binding 驗證所需。
+      receipt: body.receipt,
     });
     return { valid: result.ok, checks: result.checks, payload: result.payload };
   });

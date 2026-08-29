@@ -22,18 +22,21 @@
  * 沒有新鮮度窗時一份被拒的 request_jws 可長期保存,待條件變好(例如聚合完成)再重放取得 PERMIT。
  * 時間基準可由呼叫端注入(DiscloseOptions.now),測試不依賴真實時間流逝。
  */
-import { decodeJwt, decodeProtectedHeader, jwtVerify, errors as joseErrors } from 'jose';
+import crypto from 'node:crypto';
+import { SignJWT, decodeJwt, decodeProtectedHeader, jwtVerify, errors as joseErrors } from 'jose';
 import type Database from 'better-sqlite3';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
-import { resolveWorkloadPublicKeyByKid } from '../keys';
-import { checkStatusBit, readStatusListToken } from '../statuslist';
-import { getCredential } from './store';
+import { resolveWorkloadPublicKeyByKid, loadSandboxKey } from '../keys';
+import { checkStatusBit, readFreshStatusListToken, statusListUri } from '../statuslist';
+import { getCredential, type CredentialRow } from './store';
+import { verifyCompactSdJwt } from './verifier';
 import { presentSelectedDisclosures } from './presenter';
 import { recordDecision } from '../audit';
 import { getMandateByJti, incrementMandateQueriesUsed, type MandateRow } from './mandateStore';
 import { authorizeDiscloseClaim } from '../policy/cedar';
 import { tagForClaim, isSelectableDisclosure, GRANULARITY_RANK } from '../policy/claims';
-import { GATEWAY_AUD, MANDATE_ISSUER_ROLE } from './mandate';
+import { GATEWAY_AUD, MANDATE_ISSUER_ROLE, RECEIPT_TYP, RECEIPT_AUDIENCE } from './mandate';
+import { PCF_AGGREGATE_VCT } from './pcfAggregate';
 import { CODES, type ReasonCode } from '../../shared/codes';
 import type { DiscloseRequestPayload, MandateId, MandatePayload, PcfAggregateCaseId, TrustedContext } from '../../shared/types';
 
@@ -55,6 +58,8 @@ export interface DiscloseOptions {
 export interface DiscloseSuccess {
   kind: 'success';
   presentation: string;
+  /** F4:閘道對本次 PERMIT 簽出之 receipt(綁 presentation_hash+mandate_jti+request_nonce+aud+iat)。 */
+  receipt: string;
   caseId: PcfAggregateCaseId;
   mandateId: string;
   policyId: 'P1';
@@ -193,6 +198,75 @@ function isFreshRequest(iatSec: number, nowMs: number): boolean {
   return iatSec <= nowSec + REQUEST_CLOCK_SKEW_SEC && nowSec - iatSec <= REQUEST_MAX_AGE_SEC;
 }
 
+/** 被揭露 aggregate 之時間宣告有界時鐘偏移(秒)。 */
+const AGGREGATE_CLOCK_SKEW_SEC = 60;
+
+/**
+ * F3(Codex adversarial review):組 presentation 前先驗被揭露的 pcf_aggregate 自身完整性——
+ * 簽章 + 揭露完整性、vct↔issuer 綁定(以實際驗章鑰為準)、時間宣告(nbf/exp)、
+ * credentials Token Status List 撤銷位元。任一失敗 → 呼叫端 DENY(且交易尚未開始,不扣 cap、
+ * 不寫 presentation)。舊版拿到 aggRow 後直接 present,被撤/過期/偽造的 aggregate 照樣越界揭露。
+ */
+async function verifyAggregateForDisclosure(
+  aggRow: CredentialRow,
+  nowMs: number,
+): Promise<{ ok: true } | { ok: false; reasonCode: ReasonCode; detail?: string }> {
+  const manifest = readManifest();
+  if (!manifest) return { ok: false, reasonCode: CODES.CREDENTIAL_SIG_INVALID, detail: 'manifest 缺失' };
+
+  // 時間宣告(nbf/exp)先於簽章驗證判斷:@sd-jwt/sd-jwt-vc 的 verify() 會在效期外直接丟簽章層錯誤
+  // (歸類 CREDENTIAL_SIG_INVALID),掩蓋「過期」這個精確原因。故先自(未驗簽)payload 讀時間宣告,
+  // 過期/未生效 → CREDENTIAL_EXPIRED;通過後再真驗簽章與綁定(下方)。有界 skew。
+  const nowSec = Math.floor(nowMs / 1000);
+  let unverified: Record<string, unknown> = {};
+  try {
+    unverified = decodeJwt(aggRow.sd_jwt.split('~')[0]) as Record<string, unknown>;
+  } catch {
+    /* 解析失敗留給下方簽章驗證回報 CREDENTIAL_SIG_INVALID */
+  }
+  const nbf = typeof unverified.nbf === 'number' ? unverified.nbf : undefined;
+  const exp = typeof unverified.exp === 'number' ? unverified.exp : undefined;
+  if (nbf != null && nowSec + AGGREGATE_CLOCK_SKEW_SEC < nbf) return { ok: false, reasonCode: CODES.CREDENTIAL_EXPIRED, detail: '尚未生效(nbf)' };
+  if (exp != null && nowSec - AGGREGATE_CLOCK_SKEW_SEC > exp) return { ok: false, reasonCode: CODES.CREDENTIAL_EXPIRED, detail: '已過期(exp)' };
+
+  const sig = await verifyCompactSdJwt(aggRow.sd_jwt, resolvePublicKeyFromManifest(manifest));
+  if (!sig.ok || !sig.payload) return { ok: false, reasonCode: sig.reasonCode ?? CODES.CREDENTIAL_SIG_INVALID, detail: sig.error };
+  const payload = sig.payload as unknown as Record<string, unknown>;
+
+  // vct↔issuer 綁定:pcf_aggregate 只認鴻鋼 LE AID,且以實際驗章鑰(sig.kid)為準,payload.iss 不得脫鉤。
+  const expectedAid = manifest.hunggang?.aid;
+  if (payload.vct !== PCF_AGGREGATE_VCT || !expectedAid || sig.kid !== expectedAid || payload.iss !== sig.kid) {
+    return { ok: false, reasonCode: CODES.VCT_ISSUER_UNAUTHORIZED, detail: `vct/iss/kid 綁定不符(vct=${String(payload.vct)} kid=${String(sig.kid)})` };
+  }
+
+  // credentials Token Status List 撤銷位元(F6:傳入預期清單 URI + now)。
+  const statusEntry = (payload.status as { status_list?: { idx?: number; uri?: string } } | undefined)?.status_list;
+  const issuerKey = resolvePublicKeyFromManifest(manifest)(expectedAid);
+  const credentialsToken = await readFreshStatusListToken('credentials', nowMs);
+  if (statusEntry?.idx == null || statusEntry.uri !== statusListUri('credentials') || !issuerKey || !credentialsToken) {
+    return { ok: false, reasonCode: CODES.CREDENTIAL_REVOKED, detail: 'aggregate status 參照或 credentials 清單缺失/URI 不符' };
+  }
+  const bit = await checkStatusBit(credentialsToken, statusEntry.idx, issuerKey, statusListUri('credentials'), { now: nowMs });
+  if (!bit.ok || bit.revoked) return { ok: false, reasonCode: CODES.CREDENTIAL_REVOKED, detail: bit.error ?? `idx=${statusEntry.idx} 已撤銷` };
+  return { ok: true };
+}
+
+/**
+ * F4:閘道(鴻鋼 LE 鑰)對每次 PERMIT 簽出 receipt——綁 presentation_hash + mandate_jti +
+ * request_nonce + audience(Bruck 驗證方)+ issued_at。Bruck 端驗此 receipt(簽章 + 綁定值一致 +
+ * 新鮮度),使「擷取的 presentation 換一個 request_nonce/配對另一張相容 mandate 重放」被抓。
+ */
+async function issueGatewayReceipt(args: { presentation: string; mandateJti: string; requestNonce: string; nowMs: number }): Promise<string> {
+  const key = loadSandboxKey('hunggang');
+  const presentationHash = crypto.createHash('sha256').update(args.presentation).digest('hex');
+  return new SignJWT({ presentation_hash: presentationHash, mandate_jti: args.mandateJti, request_nonce: args.requestNonce })
+    .setProtectedHeader({ alg: 'EdDSA', typ: RECEIPT_TYP, kid: key.kid })
+    .setIssuer(key.kid)
+    .setAudience(RECEIPT_AUDIENCE)
+    .setIssuedAt(Math.floor(args.nowMs / 1000))
+    .sign(key.privateKey);
+}
+
 /** 幕 3/4 主管線。輸入為 request_jws 原始字串(尚不信任內容)。 */
 export async function processDiscloseRequest(
   db: Database.Database,
@@ -248,11 +322,14 @@ export async function processDiscloseRequest(
     });
   }
 
-  // 步驟 5:Token Status List(mandates 清單)。
+  // 步驟 5:Token Status List(mandates 清單;F6:傳入預期清單 URI + now,並要求 mandate 的 status 參照
+  //         URI 與被查清單一致才讀 bit)。閘道為發布方,用 readFreshStatusListToken 取(過 ttl 自動重簽,
+  //         使 make dev 長時間執行仍拿到新鮮清單)。
   const manifest = readManifest();
   const statusIssuerKey = manifest ? resolvePublicKeyFromManifest(manifest)(manifest.hunggang.aid) : undefined;
-  const mandateStatusListToken = readStatusListToken('mandates');
-  if (!manifest || !statusIssuerKey || !mandateStatusListToken) {
+  const mandateStatusListToken = await readFreshStatusListToken('mandates', nowMs);
+  const mandateStatusUri = mandatePayload.status?.status_list?.uri;
+  if (!manifest || !statusIssuerKey || !mandateStatusListToken || mandateStatusUri !== statusListUri('mandates')) {
     return denyWithAudit(db, {
       reasonCode: CODES.MANDATE_REVOKED,
       httpStatus: 403,
@@ -260,7 +337,13 @@ export async function processDiscloseRequest(
       caseId: requestPayload.case_id,
     });
   }
-  const statusResult = await checkStatusBit(mandateStatusListToken, mandatePayload.status.status_list.idx, statusIssuerKey);
+  const statusResult = await checkStatusBit(
+    mandateStatusListToken,
+    mandatePayload.status.status_list.idx,
+    statusIssuerKey,
+    statusListUri('mandates'),
+    { now: nowMs },
+  );
   if (!statusResult.ok || statusResult.revoked) {
     return denyWithAudit(db, {
       reasonCode: CODES.MANDATE_REVOKED,
@@ -338,11 +421,32 @@ export async function processDiscloseRequest(
       caseId: requestPayload.case_id,
     });
   }
+
+  // 步驟 10b(F3):組 presentation 前先驗被揭露 aggregate 自身(簽章 + vct↔issuer 綁定 + 時間宣告 +
+  // credentials status-list 撤銷位元)。任一失敗 → DENY,交易尚未開始,不扣 cap、不寫 presentation。
+  const aggCheck = await verifyAggregateForDisclosure(aggRow, nowMs);
+  if (!aggCheck.ok) {
+    return denyWithAudit(db, {
+      reasonCode: aggCheck.reasonCode,
+      httpStatus: 403,
+      mandateId: mandateRow.id,
+      caseId: requestPayload.case_id,
+      context: { detail: aggCheck.detail },
+    });
+  }
+
   const presentationFrame: Record<string, boolean> = {};
   for (const claim of requestPayload.requested_claims) {
     if (isSelectableDisclosure(claim)) presentationFrame[claim] = true;
   }
   const presentation = await presentSelectedDisclosures(aggRow.sd_jwt, presentationFrame as never);
+  // F4:綁定本次 presentation 的閘道 receipt(隨 presentation 回傳,供 Bruck 端驗證)。
+  const receipt = await issueGatewayReceipt({
+    presentation,
+    mandateJti: mandateRow.jti,
+    requestNonce: requestPayload.request_nonce,
+    nowMs,
+  });
 
   // 交易:query_cap 重讀比對(H1)+ recordDecision(PERMIT) + presentations 寫入(以 UNIQUE 作最終
   // 防重放防線) + query_cap 扣次。以 BEGIN IMMEDIATE 執行:交易一開始就取得寫鎖,額度的
@@ -394,5 +498,5 @@ export async function processDiscloseRequest(
     throw e;
   }
 
-  return { kind: 'success', presentation, caseId: requestPayload.case_id, mandateId: mandateRow.id, policyId: 'P1' };
+  return { kind: 'success', presentation, receipt, caseId: requestPayload.case_id, mandateId: mandateRow.id, policyId: 'P1' };
 }

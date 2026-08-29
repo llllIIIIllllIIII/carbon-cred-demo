@@ -21,10 +21,13 @@ interface PrecursorRef {
 interface AggregateResponse {
   id: string;
   case_id: CaseId;
-  sd_jwt: string;
-  claims: Record<string, unknown>;
   breakdown: AggregateBreakdown;
+  // F1:/api/aggregate 不再回完整可再揭露的 sd_jwt / 整包 claims(避免跨組織持有並自行揭露三個
+  // 永不揭露分項)。憑證卡改讀明列的公開/合約層欄位;跨組織揭露一律走 POST /api/disclose。
+  cn_code: string;
+  carbon_price_paid_origin: string;
   precursor_ref: PrecursorRef;
+  status: { idx: number; uri: string };
   issued_at: string;
   valid_from: string;
   valid_until: string;
@@ -129,18 +132,18 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
           <div style={{ border: '1px solid #1a3c6e', borderRadius: 8, padding: 16, marginTop: 16, background: '#fff', maxWidth: 640 }}>
             <h3 style={{ marginTop: 0 }}>pcf_aggregate 憑證卡</h3>
             <p style={{ fontSize: 12, color: '#666' }}>🟢 公開層(非 SD 明文) · 🟡 SD 可撕欄(買方合約層 + 客戶層)</p>
-            <Row label="🟢 下游 CN Code" value={String(result.claims.cn_code)} />
+            <Row label="🟢 下游 CN Code" value={String(result.cn_code)} />
             <Row label="🟡 聚合總值(買方合約層)" value={`${result.breakdown.carbon_total_tco2e_per_t} tCO2e/t`} />
-            <Row label="🟡 台灣碳費(客戶層)" value={String(result.claims.carbon_price_paid_origin ?? '')} />
+            <Row label="🟡 台灣碳費(客戶層)" value={String(result.carbon_price_paid_origin ?? '')} />
             <Row label="🟢 precursor_ref.id" value={result.precursor_ref.id} />
             <Row label="🟢 precursor_ref.hash" value={result.precursor_ref.hash} />
             <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#666' }}>
               precursor_ref 僅為上游憑證的 id + hash 兩個欄位——不含上游任何明細(direct/indirect/生產路線等)。
             </p>
-            <details style={{ marginTop: 12 }}>
-              <summary style={{ cursor: 'pointer' }}>原始 token(一個簽章、N 張可撕欄位)</summary>
-              <textarea readOnly value={result.sd_jwt} style={{ width: '100%', height: 100, fontFamily: 'monospace', fontSize: 11, marginTop: 6 }} />
-            </details>
+            <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#888' }}>
+              pcf_aggregate 完整簽章 token 是鴻鋼內部簽發物,不由本端點對外交付——跨組織揭露一律走 Bruck
+              Agent 的 <code>/api/disclose</code>(mandate + Cedar 逐 claim + 閘道 receipt)。
+            </p>
           </div>
         </>
       )}

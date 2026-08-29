@@ -47,18 +47,27 @@ export function registerAggregateRoutes(app: FastifyInstance): void {
         return reply.code(500).send({ error: errorMessage(e) });
       }
 
+      // F1(Codex adversarial review):**不**回完整可再揭露的 SD-JWT,也不回含三個永不揭露分項的
+      // 完整 claims payload。pcf_aggregate 是鴻鋼內部簽發物;若把完整 token 交給任意(未授權)跨組織
+      // 呼叫者,對方即可持有並自行 present precursor_contribution / self_direct / self_indirect
+      // (NEVER_DISCLOSABLE 三欄),繞過 /api/disclose 的 mandate + Cedar 逐 claim 最小揭露邊界。
+      // 跨組織揭露一律走 POST /api/disclose;此端點只回「鴻鋼自有閘道頁」所需之內部檢視(疊層圖分項值 +
+      // 公開/合約層卡片欄位),不含任何可被他方持有、再揭露的簽章 token。
       return {
         id: issuance.id,
         case_id: issuance.caseId,
-        sd_jwt: issuance.sdJwt,
-        claims: issuance.payload,
+        // 疊層熱點圖三段真值(鴻鋼自己的資料,顯示於鴻鋼自有閘道頁)——非可攜、非簽章 token。
         breakdown: {
           precursor_contribution_tco2e_per_t: issuance.breakdown.precursorContribution,
           self_direct_tco2e_per_t: issuance.breakdown.selfDirect,
           self_indirect_tco2e_per_t: issuance.breakdown.selfIndirect,
           carbon_total_tco2e_per_t: issuance.breakdown.total,
         },
+        // 憑證卡顯示用之公開/合約層欄位(明列,非整包 claims;三個永不揭露分項只在 breakdown 出現)。
+        cn_code: issuance.payload.cn_code,
+        carbon_price_paid_origin: issuance.payload.carbon_price_paid_origin,
         precursor_ref: issuance.precursorRef,
+        status: issuance.payload.status.status_list,
         issued_at: issuance.issuedAt,
         valid_from: issuance.validFrom,
         valid_until: issuance.validUntil,

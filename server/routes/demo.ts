@@ -42,7 +42,19 @@ function isValidBody(
   );
 }
 
+/**
+ * F2(Codex adversarial review)輕量硬化:此無認證簽章 oracle 之 route 註冊改為**受環境旗標守衛**——
+ * production(NODE_ENV==='production')一律不註冊,demo(預設)維持既有行為。此路由確認無法繞過任一
+ * 驗證層(mandate 不存在/未聚合仍被擋、request_nonce 伺服端亂數),故不加認證/rate-limit(單人 demo 情境);
+ * 檔頭「正式部署必須移除」註解保留。DEMO_MODE=off 亦可強制關閉。
+ */
+export function isDemoSigningOracleEnabled(): boolean {
+  if (process.env.DEMO_MODE === 'off') return false;
+  return process.env.NODE_ENV !== 'production';
+}
+
 export function registerDemoRoutes(app: FastifyInstance): void {
+  if (!isDemoSigningOracleEnabled()) return; // production:不註冊無認證簽章 oracle。
   app.post('/api/demo/sign-disclose-request', async (req, reply) => {
     const body = (req.body ?? {}) as SignDiscloseRequestBody;
     if (!isValidBody(body)) {

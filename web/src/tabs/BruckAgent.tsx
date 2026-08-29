@@ -33,6 +33,8 @@ interface DiscloseSuccessResponse {
   decision: 'PERMIT';
   policy_id: 'P1';
   presentation: string;
+  /** F4:閘道 receipt——Bruck 端本地驗證(/api/verify)以此驗 key-binding。 */
+  receipt: string;
   mandate_id: string;
   case_id: CaseId;
 }
@@ -167,11 +169,12 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
     }
   }
 
-  async function handleVerify(presentation: string, mandateToken: string) {
+  async function handleVerify(presentation: string, mandateToken: string, receipt: string) {
     const r = await fetch('/api/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ presentation, mandate_jwt: mandateToken }),
+      // F4:一併送閘道 receipt,/api/verify 驗 key-binding(綁 presentation_hash/mandate_jti/nonce/aud/iat)。
+      body: JSON.stringify({ presentation, mandate_jwt: mandateToken, receipt }),
     });
     const data = (await r.json()) as VerifyApiResponse;
     setVerifyResult(data);
@@ -213,7 +216,7 @@ export function BruckAgent({ manifest, onDisclose }: { manifest: Manifest | null
           requestedClaims,
         };
         setOutcome(nextOutcome);
-        await handleVerify(discloseData.presentation, mandateJwt);
+        await handleVerify(discloseData.presentation, mandateJwt, discloseData.receipt);
       } else {
         nextOutcome = {
           decision: discloseData.decision,

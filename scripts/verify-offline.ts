@@ -18,11 +18,12 @@ import { verifyPresentation } from '../server/creds/verifyPresentation';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function parseArgs(argv: string[]): { presentation?: string; mandate?: string } {
-  const out: { presentation?: string; mandate?: string } = {};
+function parseArgs(argv: string[]): { presentation?: string; mandate?: string; receipt?: string } {
+  const out: { presentation?: string; mandate?: string; receipt?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--presentation') out.presentation = argv[++i];
     else if (argv[i] === '--mandate') out.mandate = argv[++i];
+    else if (argv[i] === '--receipt') out.receipt = argv[++i];
   }
   return out;
 }
@@ -37,20 +38,22 @@ function readStdin(): Promise<string> {
   });
 }
 
-async function loadInput(): Promise<{ presentation: string; mandate_jwt: string }> {
+async function loadInput(): Promise<{ presentation: string; mandate_jwt: string; receipt?: string }> {
   const args = parseArgs(process.argv.slice(2));
   if (args.presentation && args.mandate) {
     return {
       presentation: fs.readFileSync(path.resolve(ROOT, args.presentation), 'utf-8').trim(),
       mandate_jwt: fs.readFileSync(path.resolve(ROOT, args.mandate), 'utf-8').trim(),
+      // F4:閘道 receipt(key-binding);離線驗證同樣須驗此 receipt 才算通過。
+      receipt: args.receipt ? fs.readFileSync(path.resolve(ROOT, args.receipt), 'utf-8').trim() : undefined,
     };
   }
   const stdin = await readStdin();
-  const parsed = JSON.parse(stdin) as { presentation?: string; mandate_jwt?: string };
+  const parsed = JSON.parse(stdin) as { presentation?: string; mandate_jwt?: string; receipt?: string };
   if (!parsed.presentation || !parsed.mandate_jwt) {
     throw new Error('stdin JSON 須含 presentation 與 mandate_jwt 兩個欄位');
   }
-  return { presentation: parsed.presentation, mandate_jwt: parsed.mandate_jwt };
+  return { presentation: parsed.presentation, mandate_jwt: parsed.mandate_jwt, receipt: parsed.receipt };
 }
 
 async function main() {
@@ -62,7 +65,7 @@ async function main() {
     process.exit(1);
   }
 
-  let input: { presentation: string; mandate_jwt: string };
+  let input: { presentation: string; mandate_jwt: string; receipt?: string };
   try {
     input = await loadInput();
   } catch (e) {
@@ -75,6 +78,7 @@ async function main() {
     presentationSdJwt: input.presentation,
     mandateJwt: input.mandate_jwt,
     manifest,
+    receipt: input.receipt,
   });
 
   for (const check of result.checks) {
