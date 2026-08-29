@@ -30,12 +30,13 @@ const ACTOR_PRIVATE_FIELDS = ['seed', 'next_seed'] as const;
 
 /** 允許取用的 sandbox 角色 → actor alias(presign-vlei.sh 同步維護)。 */
 export const SANDBOX_ROLES = {
-  yarn: 'yarn', // Thép Việt LE 鑰:幕 1 簽 pcf_upstream
-  fab: 'fab', // 鴻鋼 LE 鑰:幕 2 簽 pcf_aggregate;Status List Token 簽章(閘道為清單發布方)
-  brand: 'brand', // Brand LE(驗證側身分錨定)
-  cb: 'cb', // 台驗 LE 鑰:rba_dcc 與(選配)查證聲明 VC
-  fab_cfo: 'fab-cfo', // 鴻鋼財務主管 ECR 鑰:簽 M1、幕 5 人工放行
-  brand_cso: 'brand-cso', // Brand 永續長 ECR 鑰:簽 M2
+  yarn: 'yarn', // YARN 紗廠 LE 鑰:幕 1 簽 tc_carbon_upstream
+  fab: 'fab', // FAB 布廠 LE 鑰:幕 2 簽 pcf_aggregate;Status List Token 簽章(閘道為清單發布方)
+  dye: 'dye', // DYE 染整廠 LE 鑰:簽 pcf_dyeing 與 invoice;幕 6 撤銷主線簽發者
+  brand: 'brand', // BRAND 品牌 LE(驗證側身分錨定)
+  cb: 'cb', // CB 認證機構 LE 鑰:slcp_dcc 與(選配)查證聲明 VC
+  fab_cfo: 'fab-cfo', // FAB 財務主管 ECR 鑰:簽 M1、幕 5 人工放行
+  brand_cso: 'brand-cso', // BRAND 永續長 ECR 鑰:簽 M2
 } as const;
 
 export type SandboxRole = keyof typeof SANDBOX_ROLES;

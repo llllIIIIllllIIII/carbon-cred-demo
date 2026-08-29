@@ -1,7 +1,10 @@
 /**
- * 幕 1 路由(架構決策 §4):
- *   POST /api/issue/upstream — 經 server/keys.ts 載入 Thép Việt sandbox LE AID 鑰簽 pcf_upstream;
+ * 幕 1/2 前置路由(架構決策 §4):
+ *   POST /api/issue/upstream — 經 server/keys.ts 載入 YARN sandbox LE AID 鑰簽 tc_carbon_upstream;
  *     機密欄僅 commitment hash;簽發結果寫入 credentials 表。**冪等**(M2 修正,見下)。
+ *   POST /api/issue/dyeing?case=A|B[&reissue=1] — 經 key loader 載入 DYE LE 鑰簽 pcf_dyeing;
+ *     排放由係數表計算(熱源/鍋爐效率/綠電比)。reissue=1 = 幕 6 撤銷後重簽:改用備援 idx 與
+ *     新報告期,並**替換**DB 既有那筆(upsert)——此為撤銷重簽語意,非一般冪等路徑。
  *   POST /api/creds/verify — Tab 1 demo 用之通用 SD-JWT 驗證(僅簽章 + 揭露完整性;
  *     Token Status List/vLEI 鏈屬幕 3 Brand 端管線,不在此檔範圍)。
  *   POST /api/creds/tamper-demo — 竄改 payload 1 byte,供前端接著打 /api/creds/verify
@@ -25,18 +28,19 @@
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
-import { issuePcfUpstream } from '../creds/tcCarbonUpstream';
+import { issueTcCarbonUpstream } from '../creds/tcCarbonUpstream';
+import { issuePcfDyeing } from '../creds/pcfDyeing';
 import { verifyCompactSdJwt } from '../creds/verifier';
 import { tamperPayloadByte } from '../creds/tamper';
-import { getCredential, insertCredentialIfAbsent } from '../creds/store';
+import { getCredential, insertCredentialIfAbsent, upsertCredential } from '../creds/store';
 import { CODES } from '../../shared/codes';
-import type { PcfUpstreamCaseId } from '../../shared/types';
+import type { PcfCaseId } from '../../shared/types';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function parseCaseId(caseId: unknown): PcfUpstreamCaseId | null {
+function parseCaseId(caseId: unknown): PcfCaseId | null {
   return caseId === 'A' || caseId === 'B' ? caseId : null;
 }
 
@@ -47,7 +51,7 @@ export function registerIssueRoutes(app: FastifyInstance): void {
     if (!caseId) {
       return reply.code(400).send({ error: 'case_id 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
     }
-    const id = `pcf_upstream-${caseId}`;
+    const id = `tc_carbon_upstream-${caseId}`;
 
     const db = openDb();
     try {
@@ -68,9 +72,9 @@ export function registerIssueRoutes(app: FastifyInstance): void {
         };
       }
 
-      let issuance: Awaited<ReturnType<typeof issuePcfUpstream>>;
+      let issuance: Awaited<ReturnType<typeof issueTcCarbonUpstream>>;
       try {
-        issuance = await issuePcfUpstream(caseId);
+        issuance = await issueTcCarbonUpstream(caseId);
       } catch (e) {
         return reply.code(500).send({ error: errorMessage(e) });
       }
@@ -81,7 +85,7 @@ export function registerIssueRoutes(app: FastifyInstance): void {
       try {
         const result = insertCredentialIfAbsent(db, {
           id: issuance.id,
-          type: 'pcf_upstream',
+          type: 'tc_carbon_upstream',
           caseId: issuance.caseId,
           issuerParty: issuance.issuerParty,
           holderParty: issuance.holderParty,
@@ -111,6 +115,97 @@ export function registerIssueRoutes(app: FastifyInstance): void {
         holder_party: row.holder_party,
         reused,
       };
+    } finally {
+      db.close();
+    }
+  });
+
+  app.post('/api/issue/dyeing', async (req, reply) => {
+    const query = (req.query ?? {}) as { case?: string; reissue?: string };
+    const body = (req.body ?? {}) as { case_id?: string };
+    const caseId = parseCaseId(query.case ?? body.case_id);
+    if (!caseId) {
+      return reply.code(400).send({ error: 'case 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
+    }
+    const reissue = query.reissue === '1';
+    const id = `pcf_dyeing-${caseId}`;
+
+    const db = openDb();
+    try {
+      // 一般路徑冪等(同 upstream);reissue 為幕 6 撤銷後重簽,必須替換既有那筆。
+      if (!reissue) {
+        const existing = getCredential(db, id);
+        if (existing) {
+          return {
+            id: existing.id,
+            case_id: caseId,
+            sd_jwt: existing.sd_jwt,
+            claims: JSON.parse(existing.payload_json) as Record<string, unknown>,
+            issued_at: existing.issued_at,
+            valid_from: existing.valid_from,
+            valid_until: existing.valid_until,
+            issuer_party: existing.issuer_party,
+            holder_party: existing.holder_party,
+            reused: true,
+          };
+        }
+      }
+
+      let issuance: Awaited<ReturnType<typeof issuePcfDyeing>>;
+      try {
+        issuance = await issuePcfDyeing(caseId, { reissue });
+      } catch (e) {
+        return reply.code(500).send({ error: errorMessage(e) });
+      }
+
+      try {
+        const rec = {
+          id: issuance.id,
+          type: 'pcf_dyeing',
+          caseId: issuance.caseId,
+          issuerParty: issuance.issuerParty,
+          holderParty: issuance.holderParty,
+          sdJwt: issuance.sdJwt,
+          payload: issuance.payload,
+          statusIdx: issuance.statusIdx,
+          statusUri: issuance.statusUri,
+          issuedAt: issuance.issuedAt,
+          validFrom: issuance.validFrom,
+          validUntil: issuance.validUntil,
+        };
+        if (reissue) {
+          upsertCredential(db, rec);
+          const row = getCredential(db, id);
+          if (!row) throw new Error('reissue 落庫後讀不回憑證');
+          return {
+            id: row.id,
+            case_id: caseId,
+            sd_jwt: row.sd_jwt,
+            claims: JSON.parse(row.payload_json) as Record<string, unknown>,
+            issued_at: row.issued_at,
+            valid_from: row.valid_from,
+            valid_until: row.valid_until,
+            issuer_party: row.issuer_party,
+            holder_party: row.holder_party,
+            reissued: true,
+          };
+        }
+        const { row, reused } = insertCredentialIfAbsent(db, rec);
+        return {
+          id: row.id,
+          case_id: caseId,
+          sd_jwt: row.sd_jwt,
+          claims: JSON.parse(row.payload_json) as Record<string, unknown>,
+          issued_at: row.issued_at,
+          valid_from: row.valid_from,
+          valid_until: row.valid_until,
+          issuer_party: row.issuer_party,
+          holder_party: row.holder_party,
+          reused,
+        };
+      } catch (e) {
+        return reply.code(500).send({ error: `DB 寫入失敗:${errorMessage(e)}(先跑 make setup / make seed)` });
+      }
     } finally {
       db.close();
     }

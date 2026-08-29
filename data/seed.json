@@ -1,93 +1,160 @@
 {
-  "_note": "所有識別碼與數值皆為合成資料(比賽規則第十四節)。收款帳戶識別碼為合成字串,不對應任何鏈上位址。E 不是 seed 資料組:E = 撤銷後重跑 A 的狀態轉換,不建 fixture。",
+  "_note": "v3 紡織版(spec v3 §3、§7–9)。所有公司名、識別碼與數值皆為合成資料(比賽規則第十四節),以受訪廠為原型;收款帳戶識別碼為合成字串,不對應任何鏈上位址。E 不是 seed 資料組:E = 撤銷 pcf_dyeing(A)後重跑 A 的狀態轉換,不建 fixture。所有 pcf_* 結果由程式以係數表計算,expected_* 僅供 make test 交叉驗證(計算保留 4 位小數,顯示 2 位)。",
+  "scenario": "textile-v3",
   "transaction": {
-    "upstream_product": "低碳鋼線材 SWRCH22A",
-    "upstream_cn_code": "7213.91",
-    "downstream_product": "六角螺栓 M12",
-    "downstream_cn_code": "7318.15",
-    "quantity_t": 40,
-    "unit_price_usd": 650,
-    "amount": 26000,
-    "currency": "USDC",
-    "currency_note": "USDC 為合成幣別,僅出現於 mock 付款指令",
-    "country_of_origin": "VN",
-    "contract_carbon_max": 2.0,
-    "contract_note": "≤2.00 tCO2e/t(direct+indirect)為買方合約條款,非法定;CBAM 正式期鋼鐵類申報僅計 direct"
+    "upstream_product": "rPET DTY 長絲紗(RCS 100)",
+    "upstream_tc_product_category_code": "PC0027",
+    "upstream_tc_product_detail_code": "PD0059",
+    "upstream_raw_material_code": "RM0186",
+    "upstream_raw_material_pct": 100,
+    "upstream_country_of_origin": "VN",
+    "yarn_quantity_kg": 3000,
+    "downstream_product": "Recycled polyester knitted mesh, shoe upper",
+    "downstream_hs6": "6006.32",
+    "downstream_origin": "TW",
+    "fabric_quantity_kg": 2850,
+    "dyeing_service": {
+      "quantity_kg": 2850,
+      "unit_price_usd_per_kg": 1.2,
+      "amount": 3420,
+      "currency": "USD",
+      "payer": "fab",
+      "payee": "dye",
+      "rail": "mock_wire",
+      "currency_note": "USD 電匯為訪談證實之現行方式;付款指令為 mock,不建立錢包、RPC 或鏈上交易"
+    },
+    "contract_carbon_max": 9.5,
+    "contract_carbon_max_g": 9500,
+    "contract_note": "≤ 9.5 kgCO2e/kg 布(cradle-to-gate:紗+織+染整)為品牌(BRAND)對布廠(FAB)的合約條款,非法規;Cedar 以整數 gCO2e/kg 比較"
   },
-  "pcf_defaults": {
+  "emission_factor_table": {
+    "grid_tw_kg_per_kwh": 0.474,
+    "grid_vn_kg_per_kwh": 0.6592,
+    "natural_gas_kg_per_mj": 0.0561,
+    "coal_kg_per_mj": 0.0946,
+    "boiler_efficiency": { "natural_gas": 0.9, "coal": 0.8 },
+    "sources": {
+      "grid_tw_kg_per_kwh": "經濟部能源署 113 年度電力排碳係數(公用售電)",
+      "grid_vn_kg_per_kwh": "MONRE CV 1726/BĐKH-PTCBT(2023 越南電網係數)",
+      "natural_gas_kg_per_mj": "IPCC 2006 Vol.2 Ch.2 Table 2.2(56.1 kg/GJ);環境部 113-02-05 公告",
+      "coal_kg_per_mj": "IPCC 2006 Vol.2 Ch.2 Table 2.2(94.6 kg/GJ);環境部 113-02-05 公告",
+      "boiler_efficiency": "【推估】產業常用值"
+    }
+  },
+  "upstream_defaults": {
     "issued_at": "2026-05-29",
     "valid_from": "2026-05-29",
     "valid_until": "2026-12-31",
-    "electricity_mix_ref": "VN-grid-2025 · 0.65 kgCO2e/kWh",
-    "installation_unlocode": "VN SGN",
-    "dqr": 2.1,
-    "primary_data_share": 0.87,
-    "carbon_price_paid_origin": "越南尚無強制碳定價機制(ETS 試點,預計 2028 年起實施;合成值 0 TWD/tCO2e)",
+    "pcf_period": "2026-05",
+    "tcNo": "CB-LLC-TC-20260529-00417",
+    "inputTcNo": "CB-LLC-TC-20260415-00388",
+    "tcStandard": "RCS",
+    "tcProductStandardLabelGrade": "RCS 100",
+    "tcCertifiedRawMaterialCountryOrArea": "VN",
+    "sellerTeId": "TE-VN-01924",
+    "buyerTeId": "TE-TW-00731",
+    "tcShipmentDate": "2026-05-28",
+    "tcShipmentNo": "SH-0528-07",
+    "tcProductLastProcessorName": "Sợi Xanh Việt Co., Ltd.",
+    "tcProductLastProcessorCountry": "VN",
+    "pcf_direct": 0.42,
+    "electricity_kwh_per_kg": 3.91,
+    "pcf_method": "activity×factor(ISO 14067 邊界:polymer-to-yarn gate)",
+    "pcf_factor_source": "MONRE CV 1726/2023(VN grid);TE Polyester LCA 2026(rPET chip)",
     "confidential": {
-      "machine_energy": "line-3: 412 kWh/t; line-7: 388 kWh/t(合成)",
-      "ppa_contract": "PPA-2025-VN-SOLAR-018 · 覆蓋 35%(合成)",
-      "recipe": "SWRCH22A 配比 C 0.20 / Mn 0.75 / B 微量(合成)",
-      "customer_list": "客戶名單(合成)",
-      "capacity_utilization": 0.78
+      "invoice_refs": "INV-VN-2026-0528-091(合成)",
+      "unit_price": "USD 1.85/kg(合成)",
+      "energy_invoice": "EVN 2026-05 電費單 11,730 kWh(合成)",
+      "recycler_name": "回收粒供應商名(合成;每批可能換)"
     },
-    "emission_factor_table": {
-      "electricity_vn_2025_kg_per_kwh": 0.65,
-      "eaf_route_direct_t_per_t": 0.42,
-      "bf_bof_route_direct_t_per_t": 1.98
+    "expected_pcf_indirect": 2.5775,
+    "expected_pcf_total": 2.9975
+  },
+  "dyeing_defaults": {
+    "issued_at": "2026-06-05",
+    "valid_from": "2026-06-05",
+    "valid_until": "2026-12-31",
+    "pcf_period": "2026-05",
+    "process": "dyeing_finishing",
+    "facility_country": "TW",
+    "zdhc_incheck_level": "Progressive",
+    "heat_mj_per_kg": 48.6,
+    "electricity_kwh_per_kg": 1.8,
+    "pcf_method": "activity×factor(Ecobalyse 染整製程邊界)",
+    "pcf_factor_source": "IPCC 2006 Vol.2 Table 2.2;環境部 113-02-05 公告;能源署 113 年度電力係數",
+    "confidential": {
+      "boiler_model": "鍋爐型號 XX-4T(合成)",
+      "fuel_contract": "燃料採購合約 FC-2026-03(合成)",
+      "chemical_inventory": "化學品清冊 CIL-2026-05(合成)",
+      "ppa_price": "PPA 價格 NTD 4.1/kWh(合成)"
     }
   },
   "aggregate_defaults": {
-    "precursor_input_ratio_t_per_t": 1.05,
-    "self_direct": 0.08,
-    "self_indirect": 0.33,
-    "electricity_note": "台電網約 0.494 kgCO2e/kWh × ~0.67 MWh/t",
-    "carbon_price_paid_origin": "台灣碳費一般費率 300 TWD/tCO2e",
     "issued_at": "2026-06-12",
     "valid_from": "2026-06-12",
     "valid_until": "2026-12-31",
-    "issued_at_note": "晚於上游 pcf_upstream issued_at(2026-05-29)——鴻鋼須先收到上游貨物與憑證才能算聚合;仍落在約三個月前區間(規格v2:273)"
+    "pcf_period": "2026-05",
+    "yarn_loss_factor": 1.0545,
+    "knitting_electricity_kwh_per_kg": 2.4,
+    "verification": "vFEM 2025 completed; RCS scope certificate valid",
+    "pcf_method": "activity×factor; cradle-to-gate(PEFCR A&F v3.1 邊界對照)",
+    "pcf_factor_source": "能源署 113 年度電力係數 0.474;Ecobalyse Table 16/18",
+    "issued_at_note": "晚於紗憑證(05-29)與染整憑證(06-05)——布廠須先收到兩張外部憑證才能聚合;仍落在約三個月前區間",
+    "confidential": {
+      "plant_total_output_t_per_month": 95,
+      "capacity_utilization": 0.79,
+      "other_customers": "其他客戶佔比(合成)",
+      "brand_allocation_share": 0.4,
+      "monthly_utility_commitments_kwh": [412300, 398750, 421900, 405600, 417200, 409800, 423100, 415400, 402900, 419700, 411300, 406500]
+    },
+    "expected_pcf_yarn": 3.1609,
+    "expected_pcf_knitting": 1.1376
   },
   "cases": {
     "A": {
-      "production_route": "EAF",
-      "direct": 0.42,
-      "indirect": 0.63,
-      "total": 1.05,
-      "payee_wallet": "0xA7f3...9C21",
-      "expected": "四項全過 → Dossier → 財務主管 ECR 簽署放行"
+      "heat_source": "natural_gas",
+      "renewable_share": 0.3,
+      "expected_pcf_dyeing": 3.6266,
+      "expected_pcf_total": 7.9251,
+      "payee_wallet": "ACCT-SYN-DYE-001",
+      "expected": "四項全過 → Dossier(fab-workload)→ 財務主管 ECR 簽署放行 → mock USD 電匯指令(FAB→DYE,USD 3,420)→ RELEASED"
     },
     "B": {
-      "production_route": "BF-BOF",
-      "direct": 1.98,
-      "indirect": 0.12,
-      "total": 2.1,
-      "payee_wallet": "0xA7f3...9C21",
-      "expected": "CARBON_OVER_THRESHOLD → 轉人工補件"
+      "heat_source": "coal",
+      "renewable_share": 0.0,
+      "expected_pcf_dyeing": 6.6002,
+      "expected_pcf_total": 10.8987,
+      "payee_wallet": "ACCT-SYN-DYE-001",
+      "expected": "CARBON_OVER_THRESHOLD(10.90 > 9.5)→ 轉人工:要求染整廠補件/重報"
     },
     "C": {
-      "production_route": "EAF",
-      "direct": 0.42,
-      "indirect": 0.63,
-      "total": 1.05,
-      "payee_wallet": "0x4Bd8...17Fe",
+      "heat_source": "natural_gas",
+      "renewable_share": 0.3,
+      "expected_pcf_dyeing": 3.6266,
+      "expected_pcf_total": 7.9251,
+      "payee_wallet": "ACCT-SYN-DYE-7F2C",
       "expected": "MULTI_SOURCE_CONFIRMED → 升級 → 退回"
     },
     "Cp": {
-      "production_route": "EAF",
-      "direct": 0.42,
-      "indirect": 0.63,
-      "total": 1.05,
-      "payee_wallet": "0x9Ee2...4A08",
+      "heat_source": "natural_gas",
+      "renewable_share": 0.3,
+      "expected_pcf_dyeing": 3.6266,
+      "expected_pcf_total": 7.9251,
+      "payee_wallet": "ACCT-SYN-DYE-9E04",
       "expected": "SINGLE_SOURCE_ONLY → 只記錄不升級(自我約束)"
     }
   },
   "risk_signals": [
-    { "case_id": "A", "payee_wallet": "0xA7f3...9C21", "provider": "provider_a", "score": 12, "labels": [] },
-    { "case_id": "B", "payee_wallet": "0xA7f3...9C21", "provider": "provider_a", "score": 12, "labels": [] },
-    { "case_id": "C", "payee_wallet": "0x4Bd8...17Fe", "provider": "provider_a", "score": 78, "labels": ["peel_chain", "rapid_passthrough"] },
-    { "case_id": "C", "payee_wallet": "0x4Bd8...17Fe", "provider": "provider_b", "score": 71, "labels": ["peel_chain"] },
-    { "case_id": "Cp", "payee_wallet": "0x9Ee2...4A08", "provider": "provider_a", "score": 74, "labels": ["rapid_passthrough"] },
-    { "case_id": "Cp", "payee_wallet": "0x9Ee2...4A08", "provider": "provider_b", "score": 18, "labels": [] }
+    { "case_id": "A", "payee_wallet": "ACCT-SYN-DYE-001", "provider": "provider_a", "score": 12, "labels": [] },
+    { "case_id": "B", "payee_wallet": "ACCT-SYN-DYE-001", "provider": "provider_a", "score": 12, "labels": [] },
+    { "case_id": "C", "payee_wallet": "ACCT-SYN-DYE-7F2C", "provider": "provider_a", "score": 78, "labels": ["peel_chain", "rapid_passthrough"] },
+    { "case_id": "C", "payee_wallet": "ACCT-SYN-DYE-7F2C", "provider": "provider_b", "score": 71, "labels": ["peel_chain"] },
+    { "case_id": "Cp", "payee_wallet": "ACCT-SYN-DYE-9E04", "provider": "provider_a", "score": 74, "labels": ["rapid_passthrough"] },
+    { "case_id": "Cp", "payee_wallet": "ACCT-SYN-DYE-9E04", "provider": "provider_b", "score": 18, "labels": [] }
   ],
-  "risk_observed_at": "2026-08-20T00:00:00Z"
+  "risk_observed_at": "2026-08-20T00:00:00Z",
+  "status_list_idx": {
+    "credentials": { "tc_carbon_upstream-A": 0, "tc_carbon_upstream-B": 1, "pcf_aggregate-A": 2, "pcf_aggregate-B": 3, "pcf_dyeing-A": 4, "pcf_dyeing-B": 5, "slcp_dcc": 6, "verification_attestation": 7, "pcf_dyeing-A-reissue": 8 },
+    "mandates": { "M1": 0, "M2": 1 }
+  }
 }

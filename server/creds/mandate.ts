@@ -16,8 +16,9 @@ import crypto from 'node:crypto';
 import { SignJWT } from 'jose';
 import { loadSandboxKey, loadWorkloadKey, type SandboxRole, type WorkloadName } from '../keys';
 import { statusListUri } from '../statuslist';
+import { readManifest } from '../manifest';
 import { M2_ALLOWED_CLAIMS } from '../policy/claims';
-import { PCF_UPSTREAM_PUBLIC_FIELDS, PCF_UPSTREAM_CUSTOMS_SD_FIELDS } from '../../shared/types';
+import { PCF_DYEING_PUBLIC_FIELDS, PCF_DYEING_BRAND_SD_FIELDS, PCF_AGGREGATE_BRAND_SD_FIELDS } from '../../shared/types';
 import type { MandateId, MandatePayload } from '../../shared/types';
 
 /** disclose 閘道之受眾(M1/M2 皆以此為 aud;impl-spec §2 request_jws payload 亦引用同一閘道)。 */
@@ -41,8 +42,8 @@ export const MANDATE_STATUS_IDX: Record<MandateId, number> = { M1: 0, M2: 1 };
  * 與實際驗章鑰)。角色鍵同時是 server/keys.ts 的 SandboxRole 與 manifest 的角色鍵。
  */
 export const MANDATE_ISSUER_ROLE: Record<MandateId, SandboxRole> = {
-  M1: 'fab_cfo', // 鴻鋼財務主管 ECR
-  M2: 'brand_cso', // Brand 永續長 ECR
+  M1: 'fab_cfo', // FAB 布廠財務主管 ECR
+  M2: 'brand_cso', // BRAND 永續長 ECR
 };
 
 /** L2:mandate 自簽發日起至少保有的效期天數(避免敘事日期過期後 demo 全面 MANDATE_EXPIRED)。 */
@@ -70,31 +71,39 @@ interface MandateDefinition {
 }
 
 const MANDATE_DEFS: Record<MandateId, MandateDefinition> = {
-  // M1(規格v2 §5.1;幕 3/4 無直接依賴,主要供幕 5 放行管線消費)。
+  // M1(spec v3 §5.1:FAB 財務部 → Agent-1,付染整費前檢查;幕 3/4 無直接依賴,主要供幕 5 放行管線消費)。
+  // allowed_claims = pcf_dyeing 公開層(不含 hash 欄)+ 品牌層 + pcf_aggregate 品牌層(Set 去重同名欄)。
   M1: {
     issuerRole: MANDATE_ISSUER_ROLE.M1,
     delegateName: 'fab-workload',
-    allowedClaims: [...PCF_UPSTREAM_PUBLIC_FIELDS.filter((f) => !f.endsWith('_hash')), ...PCF_UPSTREAM_CUSTOMS_SD_FIELDS],
-    policyVersion: 'pol-2026-08-v2',
+    allowedClaims: [
+      ...new Set([
+        ...PCF_DYEING_PUBLIC_FIELDS.filter((f) => !f.endsWith('_hash')),
+        ...PCF_DYEING_BRAND_SD_FIELDS,
+        ...PCF_AGGREGATE_BRAND_SD_FIELDS,
+      ]),
+    ],
+    policyVersion: 'pol-2026-08-v3',
     validFrom: '2026-08-01',
     validUntil: '2026-09-30',
-    agentId: 'agent-stable-001',
+    agentId: 'agent-settlement-001',
     extra: {
       scope_tools: ['verify_vc', 'check_wallet_risk', 'emit_release_credential'],
       max_amount: 50000,
-      policy_thresholds: { carbon_max: 2.0, wallet_risk_max: 40, min_sources: 2 },
+      currency: 'USD',
+      policy_thresholds: { carbon_max: 9.5, wallet_risk_max: 40, min_sources: 2 },
     },
   },
-  // M2(規格v2 §5.2;幕 3/4 主線——Agent-2 出示查驗請求之委任狀)。
+  // M2(spec v3 §5.2;幕 3/4 主線——Agent-2 出示查驗請求之委任狀)。
   M2: {
     issuerRole: MANDATE_ISSUER_ROLE.M2,
     delegateName: 'brand-workload',
     allowedClaims: [...M2_ALLOWED_CLAIMS],
-    policyVersion: 'pol-2026-08-v2',
+    policyVersion: 'pol-2026-08-v3',
     validFrom: '2026-08-01',
     validUntil: '2026-09-30',
     queryCap: 10,
-    purpose: 'CBAM_quarterly_declaration',
+    purpose: 'brand_scope3_supplier_reporting',
   },
 };
 
@@ -122,6 +131,13 @@ export interface MandateIssuance {
 /** 簽出 M1 或 M2(sandbox ECR 鑰;delegate_kid 綁定對應 workload 公鑰)。不寫入 DB——由呼叫端負責原子落庫。 */
 export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
   const def = MANDATE_DEFS[id];
+  // M1 允許交易對手 = DYE 的 LEI(讀 manifest,不寫死 SAID/LEI;spec v3 §5.1)。
+  let extra = def.extra;
+  if (id === 'M1') {
+    const manifest = readManifest();
+    if (!manifest?.dye?.lei) throw new Error('manifest 缺 dye 角色(先跑 make setup)——M1 allowed_counterparties 需要 DYE LEI');
+    extra = { ...def.extra, allowed_counterparties: [manifest.dye.lei] };
+  }
   const signingKey = loadSandboxKey(def.issuerRole);
   const delegateKey = loadWorkloadKey(def.delegateName);
   const jti = crypto.randomUUID();
@@ -174,7 +190,7 @@ export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
     mandateNonce,
     purpose: def.purpose,
     agentId: def.agentId,
-    extra: def.extra,
+    extra,
     statusIdx,
     statusUri,
     validFrom: def.validFrom,

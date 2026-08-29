@@ -45,7 +45,7 @@ async function main() {
   }
   const db = openDb();
 
-  // parties(6 角色,一律讀 manifest,不寫死 SAID)
+  // parties(v3:7 角色 = 5 LE + 2 ECR,一律讀 manifest,不寫死 SAID)
   const insParty = db.prepare(
     'INSERT INTO parties (id, kind, alias, legal_name, lei, aid, public_key, credential_said) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   );
