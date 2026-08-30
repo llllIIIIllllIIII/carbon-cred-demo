@@ -1,4 +1,4 @@
-# carbon-cred-demo(v3 紡織版)
+# carbon-cred-demo
 
 跨組織碳足跡憑證選擇性揭露 demo:**越南紗廠 → 台灣布廠 → 歐洲品牌**,外包染整為 A/B 案的碳排差異來源。
 憑證用 **SD-JWT VC**(`@sd-jwt/core` + `@sd-jwt/sd-jwt-vc`)簽發,授權用 **Cedar**,應用層撤銷用
