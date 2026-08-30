@@ -152,6 +152,17 @@ export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
   const validFromSec = Math.floor(new Date(`${def.validFrom}T00:00:00Z`).getTime() / 1000);
   const validUntilSec = Math.floor(new Date(`${validUntil}T00:00:00Z`).getTime() / 1000);
 
+  // P1-2(Codex review):M1 的授權限額(max_amount/allowed_counterparties/policy_thresholds)
+  // 必須進**簽章** payload,不得只留在未簽的 mandates.extra_json——否則同一枚合法 M1 簽章
+  // 配合被竄改的 DB 欄位即可放行更高金額/更寬鬆碳排門檻/別的交易對手方。server/routes/agent.ts
+  // 之 P3 管線一律從已驗證的 MandatePayload 讀這三欄。M2 無此三欄,維持 undefined(不進 JSON)。
+  const m1Extra =
+    id === 'M1'
+      ? (extra as
+          | { max_amount?: number; allowed_counterparties?: string[]; policy_thresholds?: MandatePayload['policy_thresholds']; currency?: string }
+          | undefined)
+      : undefined;
+
   const payload: MandatePayload = {
     jti,
     iss: signingKey.kid,
@@ -170,6 +181,12 @@ export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
     query_cap: def.queryCap,
     purpose: def.purpose,
     agent_id: def.agentId,
+    max_amount: m1Extra?.max_amount,
+    allowed_counterparties: m1Extra?.allowed_counterparties,
+    policy_thresholds: m1Extra?.policy_thresholds,
+    // P1-B(Codex review 第二輪):幣別亦簽進 payload,供 agent.ts checkInvoiceOk 比對
+    // invoice.currency,不得只讀未簽的 extra_json.currency。
+    currency: m1Extra?.currency,
   };
 
   const token = await new SignJWT(payload as unknown as Record<string, unknown>)

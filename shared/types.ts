@@ -55,6 +55,17 @@ export interface MandatePayload extends MandateBase {
   query_cap?: number;
   purpose?: string;
   agent_id?: string;
+  /**
+   * M1 專屬授權限額(Codex review P1-2):必須在**簽章 payload** 內,不得只留在未簽的
+   * mandates.extra_json——否則同一枚合法 M1 簽章配合被竄改的 DB 欄位即可放行更高金額、
+   * 更寬鬆碳排門檻,或別的交易對手方。server/routes/agent.ts 之 P3 管線一律從已驗證的
+   * MandatePayload 讀這三欄,不讀 extra_json。M2 無此三欄,恆為 undefined。
+   */
+  max_amount?: number;
+  allowed_counterparties?: string[];
+  policy_thresholds?: { carbon_max: number; wallet_risk_max: number; min_sources: number };
+  /** Codex review 第二輪 P1-B:M1 約定幣別(USD),供 invoice_ok 比對 invoice.currency,同上理由簽章保護。 */
+  currency?: string;
 }
 
 /**

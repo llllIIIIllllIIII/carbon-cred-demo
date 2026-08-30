@@ -51,11 +51,31 @@ export const CODES = {
   VCT_ISSUER_UNAUTHORIZED: 'VCT_ISSUER_UNAUTHORIZED',
   VLEI_CHAIN_BROKEN: 'VLEI_CHAIN_BROKEN',
 
-  // 幕 5 放行管線
+  // 幕 5 放行管線(Phase 3a)
   CARBON_OVER_THRESHOLD: 'CARBON_OVER_THRESHOLD',
   MULTI_SOURCE_CONFIRMED: 'MULTI_SOURCE_CONFIRMED',
   SINGLE_SOURCE_ONLY: 'SINGLE_SOURCE_ONLY',
   RELEASE_APPROVED: 'RELEASE_APPROVED',
+  // P3 五要件全過、Dossier 已建立(對照 POLICY_P1_PERMIT 之整體 PERMIT 標記)
+  POLICY_P3_PERMIT: 'POLICY_P3_PERMIT',
+  // invoice_ok ①:發票驗章失敗、簽發者非 DYE、或 vct 型別不符
+  INVOICE_INVALID: 'INVOICE_INVALID',
+  // invoice_ok ②(Opus 獨立驗證 L2):發票金額超過 mandate.max_amount——與③payee 不符分開歸類,
+  // 避免「金額超限」與「收款方不對」共用同一理由碼、語意含混
+  AMOUNT_OVER_LIMIT: 'AMOUNT_OVER_LIMIT',
+  // invoice_ok ③:收款方 LEI 不在 mandate.allowed_counterparties
+  COUNTERPARTY_NOT_ALLOWED: 'COUNTERPARTY_NOT_ALLOWED',
+  // POST /api/human-sign:dossier_id 查無對應 Dossier
+  DOSSIER_NOT_FOUND: 'DOSSIER_NOT_FOUND',
+  // POST /api/human-sign:Dossier 狀態非 PENDING_HUMAN(已放行、或依據已撤銷)不得再簽
+  DOSSIER_NOT_RELEASABLE: 'DOSSIER_NOT_RELEASABLE',
+  // Codex review P1-3:消費 pcf_aggregate 前,其 precursor_refs 對不上「現況」tc_rcs/
+  // pcf_upstream/pcf_dyeing 之 sha256(sd_jwt)——重簽輸入後未重聚合,聚合值已陳舊,不得沿用續走。
+  AGGREGATE_STALE: 'AGGREGATE_STALE',
+  // Codex review 第二輪 P1-B:invoice.payer_lei ≠ FAB LEI(合法 DYE 簽發票但付款人不是布廠)
+  PAYER_NOT_ALLOWED: 'PAYER_NOT_ALLOWED',
+  // Codex review 第二輪 P1-B:invoice.currency ≠ M1 簽章內約定幣別(USD)
+  CURRENCY_MISMATCH: 'CURRENCY_MISMATCH',
 
   // 稽核
   AUDIT_CHAIN_TAMPERED: 'AUDIT_CHAIN_TAMPERED',
@@ -63,3 +83,15 @@ export const CODES = {
 } as const;
 
 export type ReasonCode = (typeof CODES)[keyof typeof CODES];
+
+/**
+ * Dossier 狀態機(幕 5;server/routes/agent.ts 建立 → POST /api/human-sign 轉態;
+ * 幕 6 撤銷 pcf_dyeing 後既有 Dossier 標 DEPENDS_REVOKED,非本 phase 範圍但先留欄位)。
+ */
+export const DOSSIER_STATUS = {
+  PENDING_HUMAN: 'PENDING_HUMAN',
+  RELEASED: 'RELEASED',
+  DEPENDS_REVOKED: 'DEPENDS_REVOKED',
+} as const;
+
+export type DossierStatus = (typeof DOSSIER_STATUS)[keyof typeof DOSSIER_STATUS];

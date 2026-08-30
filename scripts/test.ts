@@ -41,7 +41,7 @@ import { readStatusListToken, checkStatusBit, buildAndWriteStatusList, statusLis
 import { M2_ALLOWED_CLAIMS, NEVER_DISCLOSABLE_CLAIMS, isSelectableDisclosure } from '../server/policy/claims';
 import { authorizeEmitReleaseCredential } from '../server/policy/cedar';
 import { PUBLIC_VLEI_STATE_FILE } from '../server/keys';
-import { CODES } from '../shared/codes';
+import { CODES, DOSSIER_STATUS } from '../shared/codes';
 import {
   PCF_UPSTREAM_PUBLIC_FIELDS,
   PCF_UPSTREAM_BRAND_SD_FIELDS,
@@ -164,6 +164,96 @@ async function forgeCcsScopeCert(overrides: { associated_subcontractors?: Associ
   };
   const frame = { _sd: [] } as unknown as DisclosureFrame<SdJwtVcPayload>;
   return buildIssuerInstance(key).issue(payload as unknown as SdJwtVcPayload, frame, { header: { kid: key.kid } });
+}
+
+/**
+ * Phase 3a L2 回歸鎖小工具:偽造一份內容取自 seed(transaction.dyeing_service/cases[case])、
+ * 但可覆寫 amount/payee_lei 的 invoice,預設由**真正的** DYE sandbox LE 鑰簽章——用來隔離測試
+ * checkInvoiceOk 的兩種失敗路徑各自回獨立理由碼(AMOUNT_OVER_LIMIT / COUNTERPARTY_NOT_ALLOWED),
+ * 不涉及竄改簽章本身。
+ */
+async function forgeInvoice(
+  caseId: 'A' | 'B' | 'C' | 'Cp',
+  overrides: { amount?: number; currency?: string; payerLei?: string; payeeLei?: string; payeeWallet?: string } = {},
+): Promise<string> {
+  const seedForForge = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8'));
+  const svc = seedForForge.transaction.dyeing_service;
+  const caseData = seedForForge.cases[caseId];
+  const manifestForForge = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+  const key = loadSandboxKey('dye');
+  const issuedAtSec = Math.floor(new Date(`${seedForForge.dyeing_defaults.issued_at}T00:00:00Z`).getTime() / 1000);
+  const payload = {
+    vct: 'https://carbon-cred-demo.local/vct/invoice',
+    iss: key.kid,
+    iat: issuedAtSec,
+    invoice_no: `INV-forged-${caseId}`,
+    amount: overrides.amount ?? svc.amount,
+    currency: overrides.currency ?? svc.currency,
+    quantity_kg: svc.quantity_kg,
+    payee_wallet: overrides.payeeWallet ?? caseData.payee_wallet,
+    payer_lei: overrides.payerLei ?? manifestForForge.fab.lei,
+    payee_lei: overrides.payeeLei ?? manifestForForge.dye.lei,
+    issued_at: seedForForge.dyeing_defaults.issued_at,
+  };
+  const frame = { _sd: [] } as unknown as DisclosureFrame<SdJwtVcPayload>;
+  return buildIssuerInstance(key).issue(payload as unknown as SdJwtVcPayload, frame, { header: { kid: key.kid } });
+}
+
+/**
+ * Phase 3a L1/P1-6/P2-7 回歸鎖小工具:以**真正的** fab-workload 鑰簽出一份 Dossier JWS。
+ * dossierId/caseId/mandateJti 須與呼叫端插入 dossiers 表之 row 對齊(P1-6 綁定檢查所需,
+ * 除非該測項故意測試「不對齊」);checkIds 控制 payload.checks 之 id 組成(P2-7 用以測試
+ * 缺項/重複補數);allOk 控制每項 ok 值(預設 true)。
+ */
+async function forgeDossierJws(args: {
+  dossierId: string;
+  caseId: string;
+  mandateJti: string;
+  checkIds?: readonly string[];
+  allOk?: boolean;
+  invoice?: { amount?: number; currency?: string; payer_lei?: string; payee_lei?: string } | null;
+}): Promise<string> {
+  const key = loadWorkloadKey('fab-workload');
+  const checkIds = args.checkIds ?? (['identity', 'subcontractor', 'carbon_threshold', 'invoice', 'wallet_risk'] as const);
+  const allOk = args.allOk ?? true;
+  // P1-A(Codex review 第二輪):human-sign 現在從 Dossier payload.invoice 讀付款事實——
+  // 預設帶一組合法(非零金額/USD/manifest 之 fab→dye LEI)事實,使既有「全過應可放行」測項
+  // 不因這條新檢查而誤傷;傳 invoice:null 可模擬「缺 invoice 事實」的異常 Dossier。
+  let invoice: { amount: number; currency: string; payer_lei: string; payee_lei: string } | undefined;
+  if (args.invoice !== null) {
+    const manifestForForge = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+    invoice = {
+      amount: args.invoice?.amount ?? 3420,
+      currency: args.invoice?.currency ?? 'USD',
+      payer_lei: args.invoice?.payer_lei ?? manifestForForge.fab.lei,
+      payee_lei: args.invoice?.payee_lei ?? manifestForForge.dye.lei,
+    };
+  }
+  const payload = {
+    dossier_id: args.dossierId,
+    build_hash: 'test-forged-build-hash',
+    version: 'v0.3',
+    case_id: args.caseId,
+    mandate_jti: args.mandateJti,
+    checks: checkIds.map((id) => ({ id, ok: allOk })),
+    credential_hashes: { pcf_dyeing: 'x'.repeat(64), pcf_aggregate: 'y'.repeat(64), invoice: 'z'.repeat(64) },
+    invoice,
+  };
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'EdDSA', typ: 'dossier+jwt', kid: key.kid })
+    .setIssuedAt(Math.floor(Date.now() / 1000))
+    .sign(key.privateKey);
+}
+
+/** dossiers 表直接插入小工具(P1-6/P2-7 測項共用;避免每個測項重複同一段 SQL)。 */
+function insertDossierRow(
+  db: ReturnType<typeof openDb>,
+  args: { id: string; caseId: string; mandateJti: string; requestNonce: string; jws: string; status?: string },
+): void {
+  db.prepare(
+    `INSERT INTO dossiers (id, case_id, mandate_id, mandate_jti, request_nonce, jws, status, created_at)
+     VALUES (?, ?, 'M1', ?, ?, ?, ?, datetime('now'))`,
+  ).run(args.id, args.caseId, args.mandateJti, args.requestNonce, args.jws, args.status ?? 'PENDING_HUMAN');
 }
 
 let passed = 0;
@@ -964,9 +1054,16 @@ async function main() {
         restoreDb3.close();
         const finalRebind = await app3b.inject({ method: 'POST', url: '/api/issue/dyeing?case=A' });
         check('v3.1 3b 還原:pcf_dyeing-A 重簽回綁定原版 ccs_scope_cert', finalRebind.statusCode === 200, `status=${finalRebind.statusCode}`);
+        // 測試冪等修法(Opus 獨立驗證):pcf_dyeing-A 重簽後 sd_jwt 位元組已變(新 disclosure
+        // salt),但既有 pcf_aggregate-A 若沿用舊版就會留著陳舊的 precursor_refs.hash——下一輪
+        // 不 demo-reset 的 make test 在檔案更早處讀 DB 現況比對時會誤判不符。強制刪除後由下方
+        // /api/aggregate 呼叫重聚合,使 DB 內 pcf_aggregate-A 與重簽後的 pcf_dyeing-A 一致。
+        const reAggDb3 = openDb();
+        reAggDb3.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_aggregate-A');
+        reAggDb3.close();
       }
       const okRes3 = await app3b.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'A' } });
-      check('v3.1 3b 對照組(分包商清單還原後):聚合恢復 200', okRes3.statusCode === 200, `status=${okRes3.statusCode}`);
+      check('v3.1 3b 對照組(分包商清單還原後):聚合恢復 200(重聚合,precursor 與重簽後 pcf_dyeing-A 一致)', okRes3.statusCode === 200, `status=${okRes3.statusCode}`);
 
       // (b2) Codex 審查 P1-c 回歸鎖:sc_no 相同、但 ccs_scope_cert 已重簽/替換(hash 不同,
       //     pcf_dyeing-A 仍指向舊 token)→ 502 SCOPE_CERT_INVALID(不是 CCS_SUBCONTRACTOR_NOT_LISTED)。
@@ -2672,6 +2769,1103 @@ async function main() {
       check('v3 對照組:輸入憑證還原後聚合恢復 200', okRes.statusCode === 200, `status=${okRes.statusCode}`);
     } finally {
       await app26.close();
+    }
+  }
+
+  // 27) Phase 3a 幕 5(門檻與付款閘道):POST /api/agent/run → POST /api/human-sign。
+  //     案 A:P3 五要件全綠 → Dossier(fab-workload 簽,以其公鑰驗過,payload 含 build_hash/五項
+  //     結果/三張輸入憑證 hash)→ human-sign → RELEASED(release_jws 以財務主管 ECR 公鑰驗過,
+  //     mock USD 電匯指令欄位讀 seed,不寫死)→ 兩事件皆入鏈;重放同一 (mandate_id, request_nonce)
+  //     → 409 REPLAY_DETECTED 亦入鏈;verify-chain.ts 於本輪新增事件之後仍全鏈通過。
+  {
+    const app27 = buildServer();
+    try {
+      const manifest27 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const seed27 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8')) as {
+        transaction: { dyeing_service: { amount: number; currency: string; payer: string; payee: string; rail: string } };
+      };
+
+      const auditBefore27 = (await app27.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+
+      const nonceA = randomNonce();
+      const runRes = await app27.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: nonceA } });
+      check('Phase 3a 案 A:POST /api/agent/run 回 200 PERMIT', runRes.statusCode === 200, `status=${runRes.statusCode} body=${runRes.body.slice(0, 300)}`);
+      const runBody = runRes.json() as {
+        decision: string;
+        checks: Array<{ id: string; ok: boolean | null; reason_code?: string }>;
+        dossier?: { id: string; status: string; jws: string; build_hash: string; version: string; mandate_jti: string };
+      };
+      check('Phase 3a 案 A:decision=PERMIT', runBody.decision === 'PERMIT', JSON.stringify(runBody).slice(0, 200));
+      check(
+        'Phase 3a 案 A:五要件全綠(checks 長度 5,ok 皆為 true)',
+        runBody.checks?.length === 5 && runBody.checks.every((c) => c.ok === true),
+        JSON.stringify(runBody.checks),
+      );
+      check('Phase 3a 案 A:回應含 Dossier', !!runBody.dossier, JSON.stringify(runBody.dossier));
+
+      if (runBody.dossier) {
+        const dossier = runBody.dossier;
+        const fabWorkloadKey = loadWorkloadKey('fab-workload');
+
+        let dossierPayload:
+          | {
+              build_hash?: string;
+              version?: string;
+              case_id?: string;
+              mandate_jti?: string;
+              checks?: Array<{ id: string; ok: boolean | null }>;
+              credential_hashes?: { pcf_dyeing?: string; pcf_aggregate?: string; invoice?: string };
+            }
+          | undefined;
+        try {
+          const v = await jwtVerify(dossier.jws, fabWorkloadKey.publicKey);
+          dossierPayload = v.payload as typeof dossierPayload;
+        } catch {
+          dossierPayload = undefined;
+        }
+        check(
+          'Phase 3a 案 A:Dossier JWS 以 fab-workload 公鑰驗章通過',
+          decodeProtectedHeader(dossier.jws).kid === fabWorkloadKey.kid && dossierPayload !== undefined,
+          `kid=${decodeProtectedHeader(dossier.jws).kid}`,
+        );
+        check(
+          'Phase 3a 案 A:Dossier payload 含 build_hash(非空字串)、version、case_id、mandate_jti',
+          typeof dossierPayload?.build_hash === 'string' &&
+            dossierPayload.build_hash.length > 0 &&
+            typeof dossierPayload?.version === 'string' &&
+            dossierPayload?.case_id === 'A' &&
+            typeof dossierPayload?.mandate_jti === 'string' &&
+            dossierPayload.mandate_jti.length > 0,
+          JSON.stringify(dossierPayload),
+        );
+        check(
+          'Phase 3a 案 A:Dossier payload.checks 為五項結果且皆 ok:true',
+          dossierPayload?.checks?.length === 5 && dossierPayload.checks.every((c) => c.ok === true),
+          JSON.stringify(dossierPayload?.checks),
+        );
+
+        const rowsDb27 = openDb();
+        const dyeRow27 = rowsDb27.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('pcf_dyeing-A') as { sd_jwt: string };
+        const aggRow27 = rowsDb27.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('pcf_aggregate-A') as { sd_jwt: string };
+        const invoiceRow27 = rowsDb27.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string } | undefined;
+        rowsDb27.close();
+        const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+        check('Phase 3a 案 A:invoice-A 已入庫(credentials 表)', !!invoiceRow27, 'invoice-A missing');
+        check(
+          'Phase 3a 案 A:Dossier 三張輸入憑證 hash 對得上入庫 sd_jwt(pcf_dyeing/pcf_aggregate/invoice)',
+          !!invoiceRow27 &&
+            dossierPayload?.credential_hashes?.pcf_dyeing === sha256(dyeRow27.sd_jwt) &&
+            dossierPayload?.credential_hashes?.pcf_aggregate === sha256(aggRow27.sd_jwt) &&
+            dossierPayload?.credential_hashes?.invoice === sha256(invoiceRow27.sd_jwt),
+          JSON.stringify(dossierPayload?.credential_hashes),
+        );
+
+        const auditAfterRun27 = (await app27.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a 案 A:agent/run PERMIT 入鏈(audit 多一筆)',
+          auditAfterRun27.length === auditBefore27.length + 1,
+          `before=${auditBefore27.length} after=${auditAfterRun27.length}`,
+        );
+
+        // human-sign → RELEASED(財務主管 ECR 鑰簽 release;mock USD 電匯指令欄位讀 seed)。
+        const signRes = await app27.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossier.id } });
+        check('Phase 3a 案 A:POST /api/human-sign 回 200 RELEASE', signRes.statusCode === 200, `status=${signRes.statusCode} body=${signRes.body.slice(0, 300)}`);
+        const signBody = signRes.json() as {
+          decision: string;
+          status: string;
+          release_jws: string;
+          payment_instruction: { instruction_id: string; payer: string; payee: string; amount: number; currency: string; rail: string };
+        };
+        check('Phase 3a 案 A:human-sign 狀態 RELEASED', signBody.status === 'RELEASED', signBody.status);
+
+        const cfoKey = loadSandboxKey('fab_cfo');
+        const releaseHeader = decodeProtectedHeader(signBody.release_jws ?? '');
+        let releaseVerifyOk = false;
+        try {
+          await jwtVerify(signBody.release_jws, cfoKey.publicKey);
+          releaseVerifyOk = true;
+        } catch {
+          releaseVerifyOk = false;
+        }
+        check(
+          'Phase 3a 案 A:release_jws 簽章鑰為財務主管 ECR AID 且以其公鑰驗章通過',
+          releaseHeader.kid === manifest27.fab_cfo.aid && releaseVerifyOk,
+          `kid=${releaseHeader.kid} expected=${manifest27.fab_cfo.aid} verifyOk=${releaseVerifyOk}`,
+        );
+
+        // P1-A(Codex review 第二輪):payer/payee/amount/currency 一律讀 Dossier payload.invoice
+        // (已驗證之 invoice 事實,LEI 而非角色字串),不再讀 seed.transaction.dyeing_service;
+        // rail 非 invoice VC 欄位,仍讀 seed。案 A 之 invoice 內容恰與 seed 數值相同(未被竄改),
+        // 故金額/幣別仍與 seed 一致,但欄位來源已改為「已驗發票」。
+        const svc27 = seed27.transaction.dyeing_service;
+        check(
+          'Phase 3a 案 A:mock USD 電匯指令欄位正確(payer/payee 讀已驗 invoice 之 LEI,amount/currency 讀已驗 invoice,rail 讀 seed)',
+          signBody.payment_instruction?.payer === manifest27.fab.lei &&
+            signBody.payment_instruction?.payee === manifest27.dye.lei &&
+            signBody.payment_instruction?.amount === svc27.amount &&
+            signBody.payment_instruction?.currency === svc27.currency &&
+            signBody.payment_instruction?.rail === svc27.rail,
+          JSON.stringify(signBody.payment_instruction),
+        );
+
+        // P2-D(Codex review 第二輪):release_jws 綁定 payment_instruction 之正規化 hash——
+        // 消費方可重算 sha256(JSON.stringify(payment_instruction)) 與 release_jws 內
+        // payment_instruction_hash 比對,竄改指令後應偵測不一致(見對照組於本檔稍後之竄改測項)。
+        let releasePayloadDecoded: { payment_instruction_hash?: string } = {};
+        try {
+          releasePayloadDecoded = decodeJoseJwt(signBody.release_jws) as { payment_instruction_hash?: string };
+        } catch {
+          releasePayloadDecoded = {};
+        }
+        const expectedPaymentHash = crypto.createHash('sha256').update(JSON.stringify(signBody.payment_instruction)).digest('hex');
+        check(
+          'Phase 3a P2-D:release_jws 含 payment_instruction_hash 且對得上目前 payment_instruction',
+          releasePayloadDecoded.payment_instruction_hash === expectedPaymentHash,
+          `expected=${expectedPaymentHash} actual=${releasePayloadDecoded.payment_instruction_hash}`,
+        );
+
+        const auditAfterSign27 = (await app27.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a 案 A:human-sign RELEASE 入鏈(audit 再多一筆)',
+          auditAfterSign27.length === auditAfterRun27.length + 1,
+          `after_run=${auditAfterRun27.length} after_sign=${auditAfterSign27.length}`,
+        );
+
+        // 重放:同一 (mandate_id, request_nonce) 二次 → 409 REPLAY_DETECTED,入鏈。
+        const auditBeforeReplay27 = auditAfterSign27.length;
+        const replayRes = await app27.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: nonceA } });
+        check('Phase 3a 重放:同一 (mandate_id, request_nonce) 重送 agent/run → 409', replayRes.statusCode === 409, `status=${replayRes.statusCode} body=${replayRes.body}`);
+        check(
+          'Phase 3a 重放:理由碼 REPLAY_DETECTED',
+          (replayRes.json() as { reason_code?: string }).reason_code === CODES.REPLAY_DETECTED,
+          replayRes.body,
+        );
+        const auditAfterReplay27 = (await app27.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a 重放:REPLAY_DETECTED 入鏈(audit 多一筆)',
+          auditAfterReplay27.length === auditBeforeReplay27 + 1,
+          `before=${auditBeforeReplay27} after=${auditAfterReplay27.length}`,
+        );
+
+        // verify-chain 於本輪新增之 PERMIT/RELEASE/REPLAY_DETECTED 事件之後仍全鏈通過。
+        const chainRun27 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check('Phase 3a:幕 5 事件之後 scripts/verify-chain.ts 仍全鏈通過(exit 0)', chainRun27.status === 0, chainRun27.stdout.slice(-300));
+      }
+    } finally {
+      await app27.close();
+    }
+  }
+
+  // 28) Phase 3a 案 B:CARBON_OVER_THRESHOLD(染整燃煤 10.90 > 9.5)→ DENY 入鏈;
+  //     沒有可放行 Dossier——human-sign 對不存在的 dossier_id → 4xx。
+  {
+    const app28 = buildServer();
+    try {
+      const auditBefore28 = (await app28.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      const runRes = await app28.inject({ method: 'POST', url: '/api/agent/run?case=B', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3a 案 B:POST /api/agent/run 回 403 CARBON_OVER_THRESHOLD',
+        runRes.statusCode === 403,
+        `status=${runRes.statusCode} body=${runRes.body.slice(0, 300)}`,
+      );
+      const body28 = runRes.json() as { reason_code?: string; checks?: Array<{ id: string; ok: boolean | null }> };
+      check('Phase 3a 案 B:理由碼 CARBON_OVER_THRESHOLD', body28.reason_code === CODES.CARBON_OVER_THRESHOLD, JSON.stringify(body28).slice(0, 200));
+      check(
+        'Phase 3a 案 B:carbon_threshold 該列 ok:false;後續 invoice/wallet_risk 未評估(ok:null)',
+        body28.checks?.find((c) => c.id === 'carbon_threshold')?.ok === false &&
+          body28.checks?.find((c) => c.id === 'invoice')?.ok === null &&
+          body28.checks?.find((c) => c.id === 'wallet_risk')?.ok === null,
+        JSON.stringify(body28.checks),
+      );
+      const auditAfter28 = (await app28.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      check('Phase 3a 案 B:DENY 入鏈(audit 多一筆)', auditAfter28.length === auditBefore28.length + 1, `before=${auditBefore28.length} after=${auditAfter28.length}`);
+
+      const signRes28 = await app28.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: 'case-B-no-such-dossier' } });
+      check('Phase 3a 案 B:human-sign 對不存在的 Dossier → 4xx', signRes28.statusCode >= 400 && signRes28.statusCode < 500, `status=${signRes28.statusCode}`);
+      check(
+        'Phase 3a 案 B:human-sign 理由碼 DOSSIER_NOT_FOUND',
+        (signRes28.json() as { reason_code?: string }).reason_code === CODES.DOSSIER_NOT_FOUND,
+        signRes28.body,
+      );
+    } finally {
+      await app28.close();
+    }
+  }
+
+  // 29) Phase 3a 案 C:收款帳戶風險雙來源皆確認高風險 → MULTI_SOURCE_CONFIRMED,退回、不放行。
+  {
+    const app29 = buildServer();
+    try {
+      const auditBefore29 = (await app29.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      const runRes = await app29.inject({ method: 'POST', url: '/api/agent/run?case=C', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3a 案 C:POST /api/agent/run 回 403 MULTI_SOURCE_CONFIRMED(退回,不放行)',
+        runRes.statusCode === 403,
+        `status=${runRes.statusCode} body=${runRes.body.slice(0, 300)}`,
+      );
+      const body29 = runRes.json() as {
+        reason_code?: string;
+        checks?: Array<{ id: string; ok: boolean | null; meta?: { signals?: Array<{ score: number }> } }>;
+      };
+      check('Phase 3a 案 C:理由碼 MULTI_SOURCE_CONFIRMED', body29.reason_code === CODES.MULTI_SOURCE_CONFIRMED, JSON.stringify(body29).slice(0, 200));
+      const riskCheckC = body29.checks?.find((c) => c.id === 'wallet_risk');
+      check(
+        'Phase 3a 案 C:wallet_risk 該列 ok:false,兩來源分數皆 > 40(seed.risk_signals)',
+        riskCheckC?.ok === false && riskCheckC.meta?.signals?.length === 2 && riskCheckC.meta.signals.every((s) => s.score > 40),
+        JSON.stringify(riskCheckC),
+      );
+      check(
+        'Phase 3a 案 C:前四項(identity/subcontractor/carbon_threshold/invoice)皆 ok:true',
+        ['identity', 'subcontractor', 'carbon_threshold', 'invoice'].every((id) => body29.checks?.find((c) => c.id === id)?.ok === true),
+        JSON.stringify(body29.checks),
+      );
+      const auditAfter29 = (await app29.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      check('Phase 3a 案 C:DENY 入鏈(audit 多一筆)', auditAfter29.length === auditBefore29.length + 1, `before=${auditBefore29.length} after=${auditAfter29.length}`);
+    } finally {
+      await app29.close();
+    }
+  }
+
+  // 30) Phase 3a 案 Cp:收款帳戶風險僅一來源確認 → SINGLE_SOURCE_ONLY(只記錄不升級,可放行)。
+  {
+    const app30 = buildServer();
+    try {
+      const auditBefore30 = (await app30.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      const runRes = await app30.inject({ method: 'POST', url: '/api/agent/run?case=Cp', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a 案 Cp:POST /api/agent/run 回 200 PERMIT', runRes.statusCode === 200, `status=${runRes.statusCode} body=${runRes.body.slice(0, 300)}`);
+      const body30 = runRes.json() as {
+        decision: string;
+        checks: Array<{ id: string; ok: boolean | null; reason_code?: string }>;
+        dossier?: { id: string };
+      };
+      check(
+        'Phase 3a 案 Cp:decision=PERMIT 且五要件皆 ok:true',
+        body30.decision === 'PERMIT' && body30.checks?.every((c) => c.ok === true),
+        JSON.stringify(body30.checks),
+      );
+      const riskCheckCp = body30.checks?.find((c) => c.id === 'wallet_risk');
+      check(
+        'Phase 3a 案 Cp:wallet_risk 理由碼 SINGLE_SOURCE_ONLY(只記錄不升級)',
+        riskCheckCp?.reason_code === CODES.SINGLE_SOURCE_ONLY,
+        JSON.stringify(riskCheckCp),
+      );
+      check('Phase 3a 案 Cp:回應含 Dossier(可放行)', !!body30.dossier, JSON.stringify(body30.dossier));
+      const auditAfter30 = (await app30.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      check(
+        'Phase 3a 案 Cp:SINGLE_SOURCE_ONLY 獨立記一筆 + P3 PERMIT 一筆(audit 共多兩筆)',
+        auditAfter30.length === auditBefore30.length + 2,
+        `before=${auditBefore30.length} after=${auditAfter30.length}`,
+      );
+
+      if (body30.dossier) {
+        const signRes30 = await app30.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: body30.dossier.id } });
+        check(
+          'Phase 3a 案 Cp:human-sign 仍可放行(SINGLE_SOURCE_ONLY 不阻擋)→ 200 RELEASED',
+          signRes30.statusCode === 200 && (signRes30.json() as { status?: string }).status === 'RELEASED',
+          `status=${signRes30.statusCode} body=${signRes30.body.slice(0, 200)}`,
+        );
+      }
+    } finally {
+      await app30.close();
+    }
+  }
+
+  // 31) Phase 3a SC 失效路徑(幕 5 subcontractor_listed):
+  //     (a) 撤 idx=10(ccs_scope_cert)→ agent/run 回 SCOPE_CERT_INVALID(測後還原 bit)。
+  //     (b) associated_subcontractors 清空重灌(sc_no/hash 對得上現況 ccs_scope_cert,技巧同既有
+  //         v3.1 3b(b))→ CCS_SUBCONTRACTOR_NOT_LISTED(測後還原)。
+  {
+    const app31 = buildServer();
+    try {
+      const db31Init = openDb();
+      const origScopeCertRow31 = db31Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('ccs_scope_cert') as { sd_jwt: string };
+      db31Init.close();
+
+      const revokedList31 = new Array<number>(STATUS_LIST_SIZE).fill(0);
+      revokedList31[10] = 1;
+      await buildAndWriteStatusList('credentials', revokedList31);
+      try {
+        const res = await app31.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a SC 失效(a):撤 idx=10(ccs_scope_cert)→ agent/run 回 403 SCOPE_CERT_INVALID(不放行)',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.SCOPE_CERT_INVALID,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+      } finally {
+        await buildAndWriteStatusList('credentials'); // 還原全 0
+      }
+
+      const emptySubsSdJwt31 = await forgeCcsScopeCert({ associated_subcontractors: [] });
+      const swapDb31 = openDb();
+      swapDb31.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(emptySubsSdJwt31, 'ccs_scope_cert');
+      swapDb31.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_dyeing-A');
+      swapDb31.close();
+      try {
+        const rebindRes31 = await app31.inject({ method: 'POST', url: '/api/issue/dyeing?case=A' });
+        check(
+          'Phase 3a SC 失效(b)前置:pcf_dyeing-A 重簽綁定偽造(分包商清空)ccs_scope_cert 成功',
+          rebindRes31.statusCode === 200,
+          `status=${rebindRes31.statusCode}`,
+        );
+        const res = await app31.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a SC 失效(b):清單不含 DYE → agent/run 回 403 CCS_SUBCONTRACTOR_NOT_LISTED(不放行)',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.CCS_SUBCONTRACTOR_NOT_LISTED,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+      } finally {
+        const restoreDb31 = openDb();
+        restoreDb31.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origScopeCertRow31.sd_jwt, 'ccs_scope_cert');
+        restoreDb31.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_dyeing-A');
+        restoreDb31.close();
+        const finalRebind31 = await app31.inject({ method: 'POST', url: '/api/issue/dyeing?case=A' });
+        check('Phase 3a SC 失效還原:pcf_dyeing-A 重簽回綁定原版 ccs_scope_cert', finalRebind31.statusCode === 200, `status=${finalRebind31.statusCode}`);
+        // 測試冪等修法(Opus 獨立驗證,同 v3.1 3b 之修法):pcf_dyeing-A 重簽後 sd_jwt 位元組已變,
+        // 既有 pcf_aggregate-A 若沿用舊版會留著陳舊的 precursor_refs.hash,下一輪不 demo-reset 的
+        // make test 會在檔案更早處誤判不符。強制刪除,讓下方 agent/run 內建的「缺就先簽」邏輯
+        // (server/routes/agent.ts 之 issuePcfAggregate ensure)重聚合出與現況 pcf_dyeing-A 一致的版本。
+        const reAggDb31 = openDb();
+        reAggDb31.prepare('DELETE FROM credentials WHERE id = ?').run('pcf_aggregate-A');
+        reAggDb31.close();
+      }
+
+      const okRes31 = await app31.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3a SC 失效對照組:還原後 agent/run(案 A)恢復 200 PERMIT(重聚合,precursor 與重簽後 pcf_dyeing-A 一致)',
+        okRes31.statusCode === 200,
+        `status=${okRes31.statusCode}`,
+      );
+    } finally {
+      await app31.close();
+    }
+  }
+
+  // 32) Phase 3a L2(Opus 獨立驗證):invoice_ok 兩種失敗路徑理由碼分開——
+  //     amount > mandate.max_amount → AMOUNT_OVER_LIMIT;payee 不在 allowed_counterparties →
+  //     COUNTERPARTY_NOT_ALLOWED。兩者皆 DENY 入鏈(測後還原)。
+  {
+    const app32 = buildServer();
+    try {
+      const manifest32 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const db32Init = openDb();
+      const origInvoiceRow32 = db32Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string } | undefined;
+      db32Init.close();
+      check('Phase 3a L2 前置:invoice-A 已入庫(先前案 A 全綠流程應已簽發)', !!origInvoiceRow32, 'invoice-A missing');
+
+      if (origInvoiceRow32) {
+        // (a) amount(50000000)> mandate.max_amount(50000)→ 403 AMOUNT_OVER_LIMIT。
+        const overAmountInvoice = await forgeInvoice('A', { amount: 50_000_000 });
+        const swapDb32a = openDb();
+        swapDb32a.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(overAmountInvoice, 'invoice-A');
+        swapDb32a.close();
+        try {
+          const auditBefore32a = (await app32.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+          const res = await app32.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+          check(
+            'Phase 3a L2(a):invoice.amount 超過 mandate.max_amount → 403 AMOUNT_OVER_LIMIT(不是 COUNTERPARTY_NOT_ALLOWED)',
+            res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.AMOUNT_OVER_LIMIT,
+            `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+          );
+          const auditAfter32a = (await app32.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+          check(
+            'Phase 3a L2(a):AMOUNT_OVER_LIMIT 觸發後 audit_chain 多一筆(DENY 入鏈)',
+            auditAfter32a.length === auditBefore32a.length + 1,
+            `before=${auditBefore32a.length} after=${auditAfter32a.length}`,
+          );
+        } finally {
+          const restoreDb32a = openDb();
+          restoreDb32a.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow32.sd_jwt, 'invoice-A');
+          restoreDb32a.close();
+        }
+
+        // (b) payee_lei 改別家(非 DYE,不在 mandate.allowed_counterparties)→ 403 COUNTERPARTY_NOT_ALLOWED。
+        const wrongPayeeInvoice = await forgeInvoice('A', { payeeLei: manifest32.yarn.lei });
+        const swapDb32b = openDb();
+        swapDb32b.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(wrongPayeeInvoice, 'invoice-A');
+        swapDb32b.close();
+        try {
+          const auditBefore32b = (await app32.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+          const res = await app32.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+          check(
+            'Phase 3a L2(b):invoice.payee_lei 不在 mandate.allowed_counterparties → 403 COUNTERPARTY_NOT_ALLOWED(不是 AMOUNT_OVER_LIMIT)',
+            res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.COUNTERPARTY_NOT_ALLOWED,
+            `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+          );
+          const auditAfter32b = (await app32.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+          check(
+            'Phase 3a L2(b):COUNTERPARTY_NOT_ALLOWED 觸發後 audit_chain 多一筆(DENY 入鏈)',
+            auditAfter32b.length === auditBefore32b.length + 1,
+            `before=${auditBefore32b.length} after=${auditAfter32b.length}`,
+          );
+        } finally {
+          const restoreDb32b = openDb();
+          restoreDb32b.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow32.sd_jwt, 'invoice-A');
+          restoreDb32b.close();
+        }
+
+        const okRes32 = await app32.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check('Phase 3a L2 對照組:invoice-A 還原後 agent/run(案 A)恢復 200 PERMIT', okRes32.statusCode === 200, `status=${okRes32.statusCode}`);
+      }
+    } finally {
+      await app32.close();
+    }
+  }
+
+  // 33) Phase 3a L1(Opus 獨立驗證,縱深防禦):human-sign 對「簽章合法但 payload.checks
+  //     未全過」的 PENDING_HUMAN Dossier 必須拒絕(不得只信 status 欄位)——注入一份 checks
+  //     全 false、但由真 fab-workload 鑰合法簽署的 Dossier,human-sign 應被拒且狀態不變;
+  //     對照組:checks 全 true 的等價 Dossier 仍可正常放行(確認 L1 修法未誤傷正常路徑)。
+  {
+    const app33 = buildServer();
+    try {
+      const dbInsert33 = openDb();
+
+      const badDossierId = crypto.randomUUID();
+      const badMandateJti = `forged-mandate-jti-${crypto.randomUUID()}`;
+      const badNonce = randomNonce();
+      const badJws = await forgeDossierJws({ dossierId: badDossierId, caseId: 'A', mandateJti: badMandateJti, allOk: false });
+      insertDossierRow(dbInsert33, { id: badDossierId, caseId: 'A', mandateJti: badMandateJti, requestNonce: badNonce, jws: badJws });
+
+      const goodDossierId = crypto.randomUUID();
+      const goodMandateJti = `forged-mandate-jti-${crypto.randomUUID()}`;
+      const goodNonce = randomNonce();
+      const goodJws = await forgeDossierJws({ dossierId: goodDossierId, caseId: 'A', mandateJti: goodMandateJti, allOk: true });
+      insertDossierRow(dbInsert33, { id: goodDossierId, caseId: 'A', mandateJti: goodMandateJti, requestNonce: goodNonce, jws: goodJws });
+      dbInsert33.close();
+
+      const badSignRes = await app33.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: badDossierId } });
+      check(
+        'Phase 3a L1:checks 全 false 但簽章合法(且與 row 綁定)之 PENDING_HUMAN Dossier → human-sign 4xx 拒絕',
+        badSignRes.statusCode >= 400 && badSignRes.statusCode < 500,
+        `status=${badSignRes.statusCode} body=${badSignRes.body.slice(0, 200)}`,
+      );
+      check(
+        'Phase 3a L1:理由碼 DOSSIER_NOT_RELEASABLE',
+        (badSignRes.json() as { reason_code?: string }).reason_code === CODES.DOSSIER_NOT_RELEASABLE,
+        badSignRes.body,
+      );
+      const badRowAfter = openDb().prepare('SELECT status FROM dossiers WHERE id = ?').get(badDossierId) as { status: string };
+      check(
+        'Phase 3a L1:被拒 Dossier 狀態仍是 PENDING_HUMAN(未被誤放行為 RELEASED)',
+        badRowAfter.status === DOSSIER_STATUS.PENDING_HUMAN,
+        `status=${badRowAfter.status}`,
+      );
+
+      const goodSignRes = await app33.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: goodDossierId } });
+      check(
+        'Phase 3a L1 對照組:checks 全 true 之等價 Dossier(與 row 正確綁定)仍可正常放行(L1 修法未誤傷正常路徑)→ 200 RELEASED',
+        goodSignRes.statusCode === 200 && (goodSignRes.json() as { status?: string }).status === DOSSIER_STATUS.RELEASED,
+        `status=${goodSignRes.statusCode} body=${goodSignRes.body.slice(0, 200)}`,
+      );
+    } finally {
+      await app33.close();
+    }
+  }
+
+  // 34) Phase 3a P1-6(Codex review):Dossier JWS 未綁定 row——把 A 列的合法 JWS 複製貼進 B 列
+  //     → human-sign 必須拒絕(不得只驗簽章通過,需比對 payload.dossier_id/case_id/mandate_jti
+  //     與該列一致)。
+  {
+    const app34 = buildServer();
+    try {
+      const rowAId = crypto.randomUUID();
+      const rowAMandateJti = `forged-mandate-jti-${crypto.randomUUID()}`;
+      const rowAJws = await forgeDossierJws({ dossierId: rowAId, caseId: 'A', mandateJti: rowAMandateJti, allOk: true });
+
+      const rowBId = crypto.randomUUID();
+      const rowBMandateJti = `forged-mandate-jti-${crypto.randomUUID()}`;
+
+      const db34 = openDb();
+      insertDossierRow(db34, { id: rowAId, caseId: 'A', mandateJti: rowAMandateJti, requestNonce: randomNonce(), jws: rowAJws });
+      // P1-6 攻擊模擬:B 列的 jws 欄位塞入「A 列的合法 JWS」(跨列複製),B 列自己的 case/mandate_jti 不變。
+      insertDossierRow(db34, { id: rowBId, caseId: 'B', mandateJti: rowBMandateJti, requestNonce: randomNonce(), jws: rowAJws });
+      db34.close();
+
+      const crossRowRes = await app34.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: rowBId } });
+      check(
+        'Phase 3a P1-6:把 A 列合法 Dossier JWS 複製貼進 B 列 → human-sign 4xx 拒絕(JWS 未綁定此列)',
+        crossRowRes.statusCode >= 400 && crossRowRes.statusCode < 500,
+        `status=${crossRowRes.statusCode} body=${crossRowRes.body.slice(0, 200)}`,
+      );
+      check(
+        'Phase 3a P1-6:理由碼 CREDENTIAL_SIG_INVALID(綁定不符)',
+        (crossRowRes.json() as { reason_code?: string }).reason_code === CODES.CREDENTIAL_SIG_INVALID,
+        crossRowRes.body,
+      );
+      const rowBAfter = openDb().prepare('SELECT status FROM dossiers WHERE id = ?').get(rowBId) as { status: string };
+      check('Phase 3a P1-6:B 列狀態仍是 PENDING_HUMAN(未被誤放行)', rowBAfter.status === DOSSIER_STATUS.PENDING_HUMAN, `status=${rowBAfter.status}`);
+
+      const okRes34 = await app34.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: rowAId } });
+      check(
+        'Phase 3a P1-6 對照組:A 列本尊(JWS 正確綁定)仍可正常放行 → 200 RELEASED',
+        okRes34.statusCode === 200 && (okRes34.json() as { status?: string }).status === DOSSIER_STATUS.RELEASED,
+        `status=${okRes34.statusCode}`,
+      );
+    } finally {
+      await app34.close();
+    }
+  }
+
+  // 35) Phase 3a P2-7(Codex review):checksAllPassed 必須驗恰為五項預期 check id(無缺無重複)
+  //     ——湊數 Dossier(缺 wallet_risk、以 invoice 重複補滿五項,皆 ok:true,真 fab-workload
+  //     簽、與 row 正確綁定)必須被拒,不得因為「陣列長度剛好 5 且全 true」就誤放行。
+  {
+    const app35 = buildServer();
+    try {
+      const dossierId35 = crypto.randomUUID();
+      const mandateJti35 = `forged-mandate-jti-${crypto.randomUUID()}`;
+      const paddedJws = await forgeDossierJws({
+        dossierId: dossierId35,
+        caseId: 'A',
+        mandateJti: mandateJti35,
+        checkIds: ['identity', 'subcontractor', 'carbon_threshold', 'invoice', 'invoice'], // 缺 wallet_risk,invoice 重複補數
+        allOk: true,
+      });
+      const db35 = openDb();
+      insertDossierRow(db35, { id: dossierId35, caseId: 'A', mandateJti: mandateJti35, requestNonce: randomNonce(), jws: paddedJws });
+      db35.close();
+
+      const paddedRes = await app35.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierId35 } });
+      check(
+        'Phase 3a P2-7:湊數 Dossier(缺 wallet_risk、invoice 重複補數,長度 5 且皆 true)→ human-sign 4xx 拒絕',
+        paddedRes.statusCode >= 400 && paddedRes.statusCode < 500,
+        `status=${paddedRes.statusCode} body=${paddedRes.body.slice(0, 200)}`,
+      );
+      check(
+        'Phase 3a P2-7:理由碼 DOSSIER_NOT_RELEASABLE',
+        (paddedRes.json() as { reason_code?: string }).reason_code === CODES.DOSSIER_NOT_RELEASABLE,
+        paddedRes.body,
+      );
+      const rowAfter35 = openDb().prepare('SELECT status FROM dossiers WHERE id = ?').get(dossierId35) as { status: string };
+      check('Phase 3a P2-7:被拒 Dossier 狀態仍是 PENDING_HUMAN', rowAfter35.status === DOSSIER_STATUS.PENDING_HUMAN, `status=${rowAfter35.status}`);
+    } finally {
+      await app35.close();
+    }
+  }
+
+  // 36) Phase 3a P1-1(Codex review):M1 撤銷查驗 fail-open——移走/損毀 data/status/mandates.jwt
+  //     必須讓 agent/run 被拒 MANDATE_REVOKED(fail-closed),不得靜默重建全 0 清單續走付款管線。
+  {
+    const app36 = buildServer();
+    try {
+      const mandatesJwtPath = statusListFile('mandates');
+      const originalMandatesJwt = fs.readFileSync(mandatesJwtPath, 'utf-8');
+      try {
+        fs.rmSync(mandatesJwtPath);
+        const auditBefore36a = (await app36.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const res = await app36.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-1(a):mandates.jwt 缺檔 → agent/run 回 403 MANDATE_REVOKED(fail-closed,非續走)',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.MANDATE_REVOKED,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+        const auditAfter36a = (await app36.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P1-1(a):MANDATE_REVOKED(缺檔)入鏈',
+          auditAfter36a.length === auditBefore36a.length + 1,
+          `before=${auditBefore36a.length} after=${auditAfter36a.length}`,
+        );
+      } finally {
+        fs.writeFileSync(mandatesJwtPath, originalMandatesJwt);
+      }
+
+      try {
+        fs.writeFileSync(mandatesJwtPath, 'not-a-valid-jwt');
+        const res = await app36.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-1(b):mandates.jwt 損毀(非合法 JWT)→ agent/run 回 403 MANDATE_REVOKED(fail-closed)',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.MANDATE_REVOKED,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+      } finally {
+        fs.writeFileSync(mandatesJwtPath, originalMandatesJwt);
+      }
+
+      const okRes36 = await app36.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P1-1 對照組:mandates.jwt 還原後 agent/run(案 A)恢復 200 PERMIT', okRes36.statusCode === 200, `status=${okRes36.statusCode}`);
+    } finally {
+      await app36.close();
+    }
+  }
+
+  // 37) Phase 3a P1-2(Codex review):M1 授權限額改讀已驗證簽章 payload,不讀未簽的
+  //     mandates.extra_json——竄改 DB 的 extra_json(max_amount 改大、allowed_counterparties
+  //     改別家)後,agent/run 仍以簽章內原值判定,擋下對應之超額/錯對手方偽造發票。
+  {
+    const app37 = buildServer();
+    try {
+      const manifest37 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const db37Init = openDb();
+      const origExtraRow37 = db37Init.prepare("SELECT extra_json FROM mandates WHERE id = 'M1'").get() as { extra_json: string };
+      const origInvoiceRow37 = db37Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string };
+      db37Init.close();
+      const origExtra37 = JSON.parse(origExtraRow37.extra_json) as { max_amount: number; allowed_counterparties: string[] };
+
+      // (a) extra_json.max_amount 改大,配合一張金額超過「簽章內真實上限 50000」但小於「竄改
+      //     後假上限」的偽造發票 → 仍應以簽章內原值擋下 AMOUNT_OVER_LIMIT。
+      const tamperedAmountExtra = { ...origExtra37, max_amount: 9_999_999_999 };
+      const db37a = openDb();
+      db37a.prepare("UPDATE mandates SET extra_json = ? WHERE id = 'M1'").run(JSON.stringify(tamperedAmountExtra));
+      db37a.close();
+      const overLimitInvoice37 = await forgeInvoice('A', { amount: 100_000 });
+      try {
+        const swapDb37a = openDb();
+        swapDb37a.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(overLimitInvoice37, 'invoice-A');
+        swapDb37a.close();
+        const res = await app37.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-2(a):extra_json.max_amount 被竄改改大後,agent/run 仍以簽章內原值(50000)判定 → 403 AMOUNT_OVER_LIMIT',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.AMOUNT_OVER_LIMIT,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+      } finally {
+        const restoreDb37a = openDb();
+        restoreDb37a.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow37.sd_jwt, 'invoice-A');
+        restoreDb37a.prepare("UPDATE mandates SET extra_json = ? WHERE id = 'M1'").run(origExtraRow37.extra_json);
+        restoreDb37a.close();
+      }
+
+      // (b) extra_json.allowed_counterparties 改成別家(yarn LEI),配合一張 payee_lei 指向
+      //     該別家的偽造發票 → 仍應以簽章內原值(僅 DYE)擋下 COUNTERPARTY_NOT_ALLOWED。
+      const tamperedPartyExtra = { ...origExtra37, allowed_counterparties: [manifest37.yarn.lei] };
+      const db37b = openDb();
+      db37b.prepare("UPDATE mandates SET extra_json = ? WHERE id = 'M1'").run(JSON.stringify(tamperedPartyExtra));
+      db37b.close();
+      const wrongPartyInvoice37 = await forgeInvoice('A', { payeeLei: manifest37.yarn.lei });
+      try {
+        const swapDb37b = openDb();
+        swapDb37b.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(wrongPartyInvoice37, 'invoice-A');
+        swapDb37b.close();
+        const res = await app37.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-2(b):extra_json.allowed_counterparties 被竄改改別家後,agent/run 仍以簽章內原值(僅 DYE)判定 → 403 COUNTERPARTY_NOT_ALLOWED',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.COUNTERPARTY_NOT_ALLOWED,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+      } finally {
+        const restoreDb37b = openDb();
+        restoreDb37b.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow37.sd_jwt, 'invoice-A');
+        restoreDb37b.prepare("UPDATE mandates SET extra_json = ? WHERE id = 'M1'").run(origExtraRow37.extra_json);
+        restoreDb37b.close();
+      }
+
+      const okRes37 = await app37.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3a P1-2 對照組:extra_json/invoice-A 皆還原後 agent/run(案 A)恢復 200 PERMIT',
+        okRes37.statusCode === 200,
+        `status=${okRes37.statusCode}`,
+      );
+    } finally {
+      await app37.close();
+    }
+  }
+
+  // 38) Phase 3a P1-3(Codex review):聚合引用陳舊 dyeing——reissue pcf_dyeing-A(idx 8,新
+  //     pcf_period)但不重聚合,既有 pcf_aggregate-A 之 precursor_refs 對不上「現況」
+  //     pcf_dyeing-A → agent/run 必須拒(AGGREGATE_STALE),不得沿用陳舊碳總量組出全綠 Dossier。
+  //     重聚合後 hash 重新一致 → 恢復 200(與測試冪等之「重簽後重聚合」相容)。
+  {
+    const app38 = buildServer();
+    try {
+      const reissueRes38 = await app38.inject({ method: 'POST', url: '/api/issue/dyeing?case=A&reissue=1' });
+      check('Phase 3a P1-3 前置:pcf_dyeing-A reissue=1 成功(換新 sd_jwt/idx/pcf_period)', reissueRes38.statusCode === 200, `status=${reissueRes38.statusCode}`);
+
+      const auditBefore38 = (await app38.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      const staleRes = await app38.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3a P1-3:reissue 後未重聚合 → agent/run(案 A)回 403 AGGREGATE_STALE(不得沿用陳舊聚合值)',
+        staleRes.statusCode === 403 && (staleRes.json() as { reason_code?: string }).reason_code === CODES.AGGREGATE_STALE,
+        `status=${staleRes.statusCode} body=${staleRes.body.slice(0, 200)}`,
+      );
+      const auditAfter38 = (await app38.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+      check(
+        'Phase 3a P1-3:AGGREGATE_STALE 入鏈(audit 多一筆)',
+        auditAfter38.length === auditBefore38.length + 1,
+        `before=${auditBefore38.length} after=${auditAfter38.length}`,
+      );
+
+      const reAggDb38 = openDb();
+      reAggDb38.prepare("DELETE FROM credentials WHERE id = 'pcf_aggregate-A'").run();
+      reAggDb38.close();
+      const okRes38 = await app38.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3a P1-3 對照組:重聚合後 agent/run(案 A)恢復 200 PERMIT(precursor 與現況 pcf_dyeing-A 一致)',
+        okRes38.statusCode === 200,
+        `status=${okRes38.statusCode}`,
+      );
+    } finally {
+      await app38.close();
+    }
+  }
+
+  // 39) Phase 3a P1-4(Codex review):風險查詢鍵改用已驗證 invoice 的 payee_wallet(account_ref),
+  //     不再只用 case_id——案 A 的合法 DYE 簽 invoice 若 payee_wallet 指向案 C 的高風險帳戶
+  //     (seed 中 7F2C),risk 查驗必須以該帳戶真實分數判定(MULTI_SOURCE_CONFIRMED 擋下),
+  //     不得因 case_id 仍是 'A' 就沿用案 A 的低分(12)蒙混過關。
+  {
+    const app39 = buildServer();
+    try {
+      const seed39 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8')) as { cases: Record<string, { payee_wallet: string }> };
+      const highRiskWallet = seed39.cases.C.payee_wallet;
+
+      const db39Init = openDb();
+      const origInvoiceRow39 = db39Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string };
+      db39Init.close();
+
+      const hijackedInvoice = await forgeInvoice('A', { payeeWallet: highRiskWallet });
+      const swapDb39 = openDb();
+      swapDb39.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(hijackedInvoice, 'invoice-A');
+      swapDb39.close();
+      try {
+        const auditBefore39 = (await app39.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const res = await app39.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          `Phase 3a P1-4:案 A 之 invoice.payee_wallet 指向案 C 高風險帳戶(${highRiskWallet})→ 403 MULTI_SOURCE_CONFIRMED(不再拿案 A 的低分)`,
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.MULTI_SOURCE_CONFIRMED,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+        const auditAfter39 = (await app39.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P1-4:MULTI_SOURCE_CONFIRMED(帳戶劫持)入鏈',
+          auditAfter39.length === auditBefore39.length + 1,
+          `before=${auditBefore39.length} after=${auditAfter39.length}`,
+        );
+      } finally {
+        const restoreDb39 = openDb();
+        restoreDb39.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow39.sd_jwt, 'invoice-A');
+        restoreDb39.close();
+      }
+
+      const okRes39 = await app39.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P1-4 對照組:invoice-A 還原後 agent/run(案 A)恢復 200 PERMIT', okRes39.statusCode === 200, `status=${okRes39.statusCode}`);
+    } finally {
+      await app39.close();
+    }
+  }
+
+  // 40) Phase 3a P1-5(Codex review):放行非原子——同一 Dossier 併發兩次 human-sign 必須恰
+  //     一次 RELEASED、一次被拒(409 DOSSIER_NOT_RELEASABLE),audit 只 +1 RELEASE(不得雙重
+  //     放行、不得電匯執行兩次)。
+  {
+    const app40 = buildServer();
+    try {
+      const runRes40 = await app40.inject({ method: 'POST', url: '/api/agent/run?case=Cp', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P1-5 前置:agent/run(案 Cp)建出可放行 Dossier', runRes40.statusCode === 200, `status=${runRes40.statusCode}`);
+      const dossierId40 = (runRes40.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3a P1-5 前置:取得 dossier id', !!dossierId40, JSON.stringify(runRes40.json()).slice(0, 200));
+
+      if (dossierId40) {
+        const auditBefore40 = (await app40.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const [signRes1, signRes2] = await Promise.all([
+          app40.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierId40 } }),
+          app40.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierId40 } }),
+        ]);
+        const statuses = [signRes1.statusCode, signRes2.statusCode].sort();
+        check(
+          'Phase 3a P1-5:併發兩次 human-sign 恰一次 200、一次 409(不得雙重放行)',
+          statuses[0] === 200 && statuses[1] === 409,
+          `statuses=${JSON.stringify(statuses)} body1=${signRes1.body.slice(0, 120)} body2=${signRes2.body.slice(0, 120)}`,
+        );
+        const winner = signRes1.statusCode === 200 ? signRes1 : signRes2;
+        const loser = signRes1.statusCode === 200 ? signRes2 : signRes1;
+        check('Phase 3a P1-5:勝者狀態 RELEASED', (winner.json() as { status?: string }).status === DOSSIER_STATUS.RELEASED, winner.body.slice(0, 120));
+        check(
+          'Phase 3a P1-5:敗者理由碼 DOSSIER_NOT_RELEASABLE',
+          (loser.json() as { reason_code?: string }).reason_code === CODES.DOSSIER_NOT_RELEASABLE,
+          loser.body.slice(0, 200),
+        );
+
+        const auditAfter40 = (await app40.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P1-5:audit 只 +1(僅勝者記 RELEASE,敗者不入鏈)',
+          auditAfter40.length === auditBefore40.length + 1,
+          `before=${auditBefore40.length} after=${auditAfter40.length}`,
+        );
+      }
+    } finally {
+      await app40.close();
+    }
+  }
+
+  // 41) Phase 3a P1-A(Codex review 第二輪):付款金額必須源自「已驗證的 invoice」——用真 DYE
+  //     鑰簽一張 amount=1000(< max_amount 50000)但 ≠ seed(3420)的合法發票走完整流程,
+  //     human-sign 產出的電匯 amount 必為 1000,不得回退成 seed 寫死的 3420。
+  {
+    const app41 = buildServer();
+    try {
+      const db41Init = openDb();
+      const origInvoiceRow41 = db41Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string };
+      db41Init.close();
+
+      const customAmountInvoice = await forgeInvoice('A', { amount: 1000 });
+      const swapDb41 = openDb();
+      swapDb41.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(customAmountInvoice, 'invoice-A');
+      swapDb41.close();
+      try {
+        const runRes41 = await app41.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-A:amount=1000(過門檻但≠seed)之合法發票 → agent/run 回 200 PERMIT',
+          runRes41.statusCode === 200,
+          `status=${runRes41.statusCode} body=${runRes41.body.slice(0, 200)}`,
+        );
+        const dossier41 = (runRes41.json() as { dossier?: { id: string } }).dossier;
+        check('Phase 3a P1-A:回應含 Dossier', !!dossier41, JSON.stringify(runRes41.json()).slice(0, 200));
+        if (dossier41) {
+          const signRes41 = await app41.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossier41.id } });
+          check('Phase 3a P1-A:human-sign 回 200 RELEASE', signRes41.statusCode === 200, `status=${signRes41.statusCode} body=${signRes41.body.slice(0, 200)}`);
+          const paymentInstruction41 = (signRes41.json() as { payment_instruction?: { amount?: number; currency?: string } }).payment_instruction;
+          check(
+            'Phase 3a P1-A:電匯 amount 為已驗發票之 1000(非 seed 寫死的 3420)',
+            paymentInstruction41?.amount === 1000 && paymentInstruction41?.currency === 'USD',
+            JSON.stringify(paymentInstruction41),
+          );
+        }
+      } finally {
+        const restoreDb41 = openDb();
+        restoreDb41.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow41.sd_jwt, 'invoice-A');
+        restoreDb41.close();
+      }
+    } finally {
+      await app41.close();
+    }
+  }
+
+  // 42) Phase 3a P1-B(Codex review 第二輪):checkInvoiceOk 補驗 payer_lei===FAB LEI 與
+  //     currency===M1 簽章內約定幣別——payer_lei 改別家(yarn)→ 403 PAYER_NOT_ALLOWED;
+  //     currency 改 EUR → 403 CURRENCY_MISMATCH,各入鏈。
+  {
+    const app42 = buildServer();
+    try {
+      const manifest42 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const db42Init = openDb();
+      const origInvoiceRow42 = db42Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string };
+      db42Init.close();
+
+      const wrongPayerInvoice = await forgeInvoice('A', { payerLei: manifest42.yarn.lei });
+      try {
+        const swapDb42a = openDb();
+        swapDb42a.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(wrongPayerInvoice, 'invoice-A');
+        swapDb42a.close();
+        const auditBefore42a = (await app42.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const res = await app42.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-B(a):invoice.payer_lei ≠ FAB LEI(改成 yarn)→ 403 PAYER_NOT_ALLOWED',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.PAYER_NOT_ALLOWED,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+        const auditAfter42a = (await app42.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P1-B(a):PAYER_NOT_ALLOWED 入鏈',
+          auditAfter42a.length === auditBefore42a.length + 1,
+          `before=${auditBefore42a.length} after=${auditAfter42a.length}`,
+        );
+      } finally {
+        const restoreDb42a = openDb();
+        restoreDb42a.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow42.sd_jwt, 'invoice-A');
+        restoreDb42a.close();
+      }
+
+      const wrongCurrencyInvoice = await forgeInvoice('A', { currency: 'EUR' });
+      try {
+        const swapDb42b = openDb();
+        swapDb42b.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(wrongCurrencyInvoice, 'invoice-A');
+        swapDb42b.close();
+        const auditBefore42b = (await app42.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const res = await app42.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P1-B(b):invoice.currency=EUR(≠ M1 約定 USD)→ 403 CURRENCY_MISMATCH',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.CURRENCY_MISMATCH,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+        const auditAfter42b = (await app42.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P1-B(b):CURRENCY_MISMATCH 入鏈',
+          auditAfter42b.length === auditBefore42b.length + 1,
+          `before=${auditBefore42b.length} after=${auditAfter42b.length}`,
+        );
+      } finally {
+        const restoreDb42b = openDb();
+        restoreDb42b.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow42.sd_jwt, 'invoice-A');
+        restoreDb42b.close();
+      }
+
+      const okRes42 = await app42.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P1-B 對照組:invoice-A 還原後 agent/run(案 A)恢復 200 PERMIT', okRes42.statusCode === 200, `status=${okRes42.statusCode}`);
+    } finally {
+      await app42.close();
+    }
+  }
+
+  // 43) Phase 3a P2-D(Codex review 第二輪):release_jws 綁定 payment_instruction 之正規化
+  //     hash——release 後竄改 dossiers.payment_instruction_json,消費方重算 hash 應偵測不一致。
+  {
+    const app43 = buildServer();
+    try {
+      const runRes43 = await app43.inject({ method: 'POST', url: '/api/agent/run?case=Cp', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P2-D 前置:agent/run(案 Cp)建出可放行 Dossier', runRes43.statusCode === 200, `status=${runRes43.statusCode}`);
+      const dossierId43 = (runRes43.json() as { dossier?: { id: string } }).dossier?.id;
+      if (dossierId43) {
+        const signRes43 = await app43.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierId43 } });
+        check('Phase 3a P2-D 前置:human-sign 回 200 RELEASE', signRes43.statusCode === 200, `status=${signRes43.statusCode}`);
+        const releaseJws43 = (signRes43.json() as { release_jws?: string }).release_jws;
+        let releasePayload43: { payment_instruction_hash?: string } = {};
+        try {
+          releasePayload43 = releaseJws43 ? (decodeJoseJwt(releaseJws43) as { payment_instruction_hash?: string }) : {};
+        } catch {
+          releasePayload43 = {};
+        }
+        check('Phase 3a P2-D 前置:release_jws 含 payment_instruction_hash', typeof releasePayload43.payment_instruction_hash === 'string', JSON.stringify(releasePayload43));
+
+        const db43 = openDb();
+        const tamperedInstruction = { instruction_id: 'HACKED', payer: 'X', payee: 'Y', amount: 999_999, currency: 'EUR', rail: 'mock_wire' };
+        db43.prepare('UPDATE dossiers SET payment_instruction_json = ? WHERE id = ?').run(JSON.stringify(tamperedInstruction), dossierId43);
+        db43.close();
+
+        const rowAfter43 = openDb().prepare('SELECT payment_instruction_json FROM dossiers WHERE id = ?').get(dossierId43) as {
+          payment_instruction_json: string;
+        };
+        const recomputedHash43 = crypto.createHash('sha256').update(rowAfter43.payment_instruction_json).digest('hex');
+        check(
+          'Phase 3a P2-D:release 後竄改 payment_instruction_json → 重算 hash 與 release_jws.payment_instruction_hash 不符(偵測到不一致)',
+          !!releasePayload43.payment_instruction_hash && recomputedHash43 !== releasePayload43.payment_instruction_hash,
+          `release_hash=${releasePayload43.payment_instruction_hash} recomputed=${recomputedHash43}`,
+        );
+      }
+    } finally {
+      await app43.close();
+    }
+  }
+
+  // 44) Phase 3a P2-E(Codex review 第二輪):風險判定改以 distinct provider 聚合——注入「同一
+  //     provider_a 兩列高分」到一個合成測試帳戶,應視為單一來源(SINGLE_SOURCE_ONLY,不誤觸
+  //     MULTI_SOURCE_CONFIRMED);案 C(provider_a+provider_b 兩個不同來源皆高,見前列 29)與
+  //     案 Cp(僅一來源,見前列 30)之既有回歸不受影響。
+  {
+    const app44 = buildServer();
+    try {
+      const dupAccountRef = 'ACCT-SYN-TEST-DUP-PROVIDER';
+      const seedRisk44 = openDb();
+      seedRisk44.prepare('DELETE FROM risk_signals WHERE account_ref = ?').run(dupAccountRef);
+      const insRisk44 = seedRisk44.prepare(
+        'INSERT INTO risk_signals (account_ref, case_id, provider, score, labels, observed_at) VALUES (?, ?, ?, ?, ?, ?)',
+      );
+      insRisk44.run(dupAccountRef, 'A', 'provider_a', 90, JSON.stringify(['dup_test_1']), new Date().toISOString());
+      insRisk44.run(dupAccountRef, 'A', 'provider_a', 95, JSON.stringify(['dup_test_2']), new Date().toISOString());
+      seedRisk44.close();
+
+      const db44Init = openDb();
+      const origInvoiceRow44 = db44Init.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get('invoice-A') as { sd_jwt: string };
+      db44Init.close();
+
+      const dupProviderInvoice = await forgeInvoice('A', { payeeWallet: dupAccountRef });
+      try {
+        const swapDb44 = openDb();
+        swapDb44.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(dupProviderInvoice, 'invoice-A');
+        swapDb44.close();
+        const res = await app44.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P2-E:同一 provider_a 兩列高分(同一帳戶)→ 仍視為單一來源,agent/run 200 PERMIT(不誤觸 MULTI_SOURCE_CONFIRMED)',
+          res.statusCode === 200,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+        const riskCheck44 = (res.json() as { checks?: Array<{ id: string; reason_code?: string; meta?: { risk_sources_confirming?: number } }> }).checks?.find(
+          (c) => c.id === 'wallet_risk',
+        );
+        check(
+          'Phase 3a P2-E:wallet_risk 理由碼 SINGLE_SOURCE_ONLY 且 risk_sources_confirming===1(distinct provider 聚合,同 provider 多列不重複計數)',
+          riskCheck44?.reason_code === CODES.SINGLE_SOURCE_ONLY && riskCheck44?.meta?.risk_sources_confirming === 1,
+          JSON.stringify(riskCheck44),
+        );
+      } finally {
+        const restoreDb44 = openDb();
+        restoreDb44.prepare('UPDATE credentials SET sd_jwt = ? WHERE id = ?').run(origInvoiceRow44.sd_jwt, 'invoice-A');
+        restoreDb44.close();
+        const cleanupDb44 = openDb();
+        cleanupDb44.prepare('DELETE FROM risk_signals WHERE account_ref = ?').run(dupAccountRef);
+        cleanupDb44.close();
+      }
+
+      const okRes44 = await app44.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P2-E 對照組:invoice-A/risk_signals 還原後 agent/run(案 A)恢復 200 PERMIT', okRes44.statusCode === 200, `status=${okRes44.statusCode}`);
+    } finally {
+      await app44.close();
+    }
+  }
+
+  // 45) Phase 3a P2-F(Codex review 第二輪):mandateRow.jti(DB 未簽欄位)必須與簽章
+  //     payload.jti 一致——竄改 DB 的 mandates.jti(token 本身仍合法簽章,但內含另一個
+  //     jti)→ agent/run 拒(MANDATE_SIG_INVALID),不得用未簽的 row jti 續走。
+  {
+    const app45 = buildServer();
+    try {
+      const db45Init = openDb();
+      const origJtiRow45 = db45Init.prepare("SELECT jti FROM mandates WHERE id = 'M1'").get() as { jti: string };
+      db45Init.close();
+
+      const db45 = openDb();
+      db45.prepare("UPDATE mandates SET jti = ? WHERE id = 'M1'").run(`tampered-jti-${crypto.randomUUID()}`);
+      db45.close();
+      try {
+        const auditBefore45 = (await app45.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const res = await app45.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check(
+          'Phase 3a P2-F:mandates.jti 與簽章 payload.jti 不符 → agent/run 回 403 MANDATE_SIG_INVALID',
+          res.statusCode === 403 && (res.json() as { reason_code?: string }).reason_code === CODES.MANDATE_SIG_INVALID,
+          `status=${res.statusCode} body=${res.body.slice(0, 200)}`,
+        );
+        const auditAfter45 = (await app45.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P2-F:MANDATE_SIG_INVALID(jti 不符)入鏈',
+          auditAfter45.length === auditBefore45.length + 1,
+          `before=${auditBefore45.length} after=${auditAfter45.length}`,
+        );
+      } finally {
+        const restoreDb45 = openDb();
+        restoreDb45.prepare("UPDATE mandates SET jti = ? WHERE id = 'M1'").run(origJtiRow45.jti);
+        restoreDb45.close();
+      }
+
+      const okRes45 = await app45.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P2-F 對照組:mandates.jti 還原後 agent/run(案 A)恢復 200 PERMIT', okRes45.statusCode === 200, `status=${okRes45.statusCode}`);
+    } finally {
+      await app45.close();
+    }
+  }
+
+  // 46) Phase 3a P2-G(Codex review 第二輪):對已 RELEASED 的 Dossier 再次(循序,非併發)
+  //     human-sign 必須 409 且入鏈(REPLAY_DETECTED)——「DENY 與重放也入鏈」鐵律,前一輪只
+  //     回 409 卻未 recordDecision。
+  {
+    const app46 = buildServer();
+    try {
+      const runRes46 = await app46.inject({ method: 'POST', url: '/api/agent/run?case=Cp', payload: { request_nonce: randomNonce() } });
+      check('Phase 3a P2-G 前置:agent/run(案 Cp)建出可放行 Dossier', runRes46.statusCode === 200, `status=${runRes46.statusCode}`);
+      const dossierId46 = (runRes46.json() as { dossier?: { id: string } }).dossier?.id;
+      if (dossierId46) {
+        const firstSignRes46 = await app46.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierId46 } });
+        check('Phase 3a P2-G 前置:首次 human-sign 回 200 RELEASED', firstSignRes46.statusCode === 200, `status=${firstSignRes46.statusCode}`);
+
+        const auditBefore46 = (await app46.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        const replaySignRes46 = await app46.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierId46 } });
+        check(
+          'Phase 3a P2-G:對已 RELEASED 之 Dossier 循序再次 human-sign → 409',
+          replaySignRes46.statusCode === 409,
+          `status=${replaySignRes46.statusCode} body=${replaySignRes46.body.slice(0, 200)}`,
+        );
+        check(
+          'Phase 3a P2-G:理由碼 REPLAY_DETECTED',
+          (replaySignRes46.json() as { reason_code?: string }).reason_code === CODES.REPLAY_DETECTED,
+          replaySignRes46.body,
+        );
+        const auditAfter46 = (await app46.inject({ method: 'GET', url: '/api/audit?after=0' })).json() as unknown[];
+        check(
+          'Phase 3a P2-G:重放入鏈(audit_chain +1)',
+          auditAfter46.length === auditBefore46.length + 1,
+          `before=${auditBefore46.length} after=${auditAfter46.length}`,
+        );
+      }
+    } finally {
+      await app46.close();
     }
   }
 
