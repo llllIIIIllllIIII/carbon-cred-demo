@@ -11,6 +11,9 @@ import { registerDiscloseRoutes } from './routes/disclose';
 import { registerVerifyRoutes } from './routes/verify';
 import { registerDemoRoutes } from './routes/demo';
 import { registerPolicyRoutes } from './routes/policies';
+import { registerAgentRoutes } from './routes/agent';
+import { registerHumanSignRoutes } from './routes/humanSign';
+import { registerAuditRoutes } from './routes/audit';
 
 const MANIFEST_PATH = path.join(ROOT, 'data', 'vlei', 'manifest.json');
 
@@ -62,6 +65,9 @@ export function buildServer() {
   registerVerifyRoutes(app);
   registerDemoRoutes(app);
   registerPolicyRoutes(app);
+  registerAgentRoutes(app);
+  registerHumanSignRoutes(app);
+  registerAuditRoutes(app);
 
   return app;
 }

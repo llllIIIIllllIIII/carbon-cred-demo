@@ -2,7 +2,10 @@
  * seed:讀 data/vlei/manifest.json + data/seed.json →
  *   1) 重建 DB(parties / policies / risk_signals / status_lists)
  *   2) 產生兩把 workload 鑰(經 server/keys.ts,冪等)
- *   3) 重簽重寫 data/status/mandates.jwt、credentials.jwt(全 0 = 無撤銷)
+ *   3) v3.1:灌案件前先由 CB 簽發 tc_rcs 與 ccs_scope_cert(冪等入庫)——pcf_upstream 簽發前
+ *      必先取得入庫 tc_rcs(tc_ref 綁定),pcf_dyeing/pcf_aggregate 之 ccs_scope_ref 亦須綁定
+ *      已入庫的 ccs_scope_cert;兩者順序不拘,惟皆須早於任一 pcf_upstream/pcf_dyeing 簽發。
+ *   4) 重簽重寫 data/status/mandates.jwt、credentials.jwt(全 0 = 無撤銷)
  * make demo-reset 重跑本腳本即可還原 seed 狀態(錄影 SOP 第一步)。
  * seed 只有 A/B/C/Cp 四組;E = 撤銷後重跑 A 的狀態轉換,不建 fixture。
  */
@@ -10,6 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, DB_PATH, openDb } from '../server/db';
 import { ensureWorkloadKeys, writePublicVleiState } from '../server/keys';
+import { ensureTcRcs } from '../server/creds/tcRcs';
+import { ensureCcsScopeCert } from '../server/creds/ccsScopeCert';
 import {
   buildAndWriteStatusList,
   statusListUri,
@@ -31,9 +36,9 @@ async function main() {
   const seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf-8'));
 
   const kids = ensureWorkloadKeys();
-  console.log(`workload 鑰:hunggang-workload kid=${kids['hunggang-workload'].slice(0, 12)}… / bruck-workload kid=${kids['bruck-workload'].slice(0, 12)}…`);
+  console.log(`workload 鑰:fab-workload kid=${kids['fab-workload'].slice(0, 12)}… / brand-workload kid=${kids['brand-workload'].slice(0, 12)}…`);
 
-  // H3:匯出 .vlei/state.json 的公開子集(去 seed/next_seed)供 Bruck 端 sandbox verify 使用,
+  // H3:匯出 .vlei/state.json 的公開子集(去 seed/next_seed)供 Brand 端 sandbox verify 使用,
   // 使驗證端只讀 data/vlei/(CLAUDE.md:25);唯一讀 state.json 的模組仍是 server/keys.ts。
   const publicStateFile = writePublicVleiState();
   console.log(`vLEI 公開狀態(不含私鑰種子):${path.relative(ROOT, publicStateFile)}`);
@@ -45,13 +50,21 @@ async function main() {
   }
   const db = openDb();
 
-  // parties(6 角色,一律讀 manifest,不寫死 SAID)
+  // parties(v3:7 角色 = 5 LE + 2 ECR,一律讀 manifest,不寫死 SAID)
   const insParty = db.prepare(
     'INSERT INTO parties (id, kind, alias, legal_name, lei, aid, public_key, credential_said) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   );
   for (const [id, r] of Object.entries(manifest)) {
     insParty.run(id, r.kind, r.alias, r.legal_name, r.lei, r.aid, r.public_key, r.credential_said);
   }
+
+  // v3.1:灌案件前先由 CB 簽發 tc_rcs(Transaction Certificate)與 ccs_scope_cert(布廠 Scope
+  // Certificate)——冪等(ensureTcRcs/ensureCcsScopeCert 內部先查再簽,已入庫則直接沿用)。
+  const tcRcsResult = await ensureTcRcs(db);
+  const scopeCertResult = await ensureCcsScopeCert(db);
+  console.log(
+    `CB 簽發:tc_rcs(${tcRcsResult.reused ? '沿用既有' : '新簽'})、ccs_scope_cert(${scopeCertResult.reused ? '沿用既有' : '新簽'})`,
+  );
 
   // policies(Cedar 原文;前端顯示同一份)
   const insPolicy = db.prepare('INSERT INTO policies (id, version, name, cedar_text, active) VALUES (?, ?, ?, ?, 1)');

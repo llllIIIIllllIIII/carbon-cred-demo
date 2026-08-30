@@ -1,6 +1,6 @@
 /**
  * SD-JWT VC 驗證包裝——僅做簽章 + 揭露完整性驗證(RFC 9901 core)。
- * Token Status List 與 vLEI 鏈查驗屬幕 3 Bruck 端管線(架構決策 §4:POST /api/verify),
+ * Token Status List 與 vLEI 鏈查驗屬幕 3 Brand 端管線(架構決策 §4:POST /api/verify),
  * 不在本檔範圍;此處 disableStatusVerification:true 只證明「這把鑰真的簽過這包 claims」,
  * 供幕 1 Tab 1 展示 verify() 通過與竄改後驗證失敗(DoD,藍圖:133)。
  *

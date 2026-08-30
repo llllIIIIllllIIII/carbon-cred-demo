@@ -1,5 +1,5 @@
 /**
- * Bruck 端驗證核心(幕 3 DoD)——POST /api/verify 與 scripts/verify-offline.ts 共用同一函式,
+ * Brand 端驗證核心(幕 3 DoD)——POST /api/verify 與 scripts/verify-offline.ts 共用同一函式,
  * 避免雙寫(impl-spec §3)。
  *
  * 鐵則(CLAUDE.md:25):只讀 token、manifest 公鑰、data/vlei/、data/status/;不得呼叫閘道 API、
@@ -14,8 +14,8 @@
  *
  * 檢查項(impl-spec §3,每項獨立布林 + 失敗理由碼):
  *   1. SD-JWT 簽章 + 揭露完整性(verifyCompactSdJwt)。
- *   2. vct ↔ 簽發者 AID 綁定(遺留 a + C1):pcf_aggregate 只認鴻鋼 LE AID、pcf_upstream 只認
- *      Thép Việt LE AID——AID 動態自 manifest 取,不硬編;**以實際驗章鑰(header.kid)為準**,
+ *   2. vct ↔ 簽發者 AID 綁定(遺留 a + C1):pcf_aggregate 只認FAB LE AID、pcf_upstream 只認
+ *      YARN LE AID——AID 動態自 manifest 取,不硬編;**以實際驗章鑰(header.kid)為準**,
  *      並要求 payload.iss 與實際簽章者一致;不符 → VCT_ISSUER_UNAUTHORIZED。
  *   3. vLEI 鏈(sandbox verify child_process;查的是**實際簽章者**對應的角色 SAID)。
  *   4. Status List(credentials 清單;先驗 JWS 簽章再解碼查 idx)。
@@ -28,23 +28,26 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { jwtVerify, decodeProtectedHeader } from 'jose';
 import { ROOT, VLEI_PUBLIC_STATE_DIR } from '../db';
+import { splitSdJwt } from '@sd-jwt/core';
 import { verifyCompactSdJwt } from './verifier';
 import { resolvePublicKeyFromManifest } from '../manifest';
 import { checkStatusBit, readStatusListToken, statusListUri } from '../statuslist';
 import { PCF_AGGREGATE_VCT } from './pcfAggregate';
 import { PCF_UPSTREAM_VCT } from './pcfUpstream';
+import { PCF_DYEING_VCT } from './pcfDyeing';
 import { GATEWAY_AUD, RECEIPT_TYP, RECEIPT_AUDIENCE } from './mandate';
 import { CODES, type ReasonCode } from '../../shared/codes';
 import type { Manifest, MandatePayload } from '../../shared/types';
 
 /** vct → 唯一被授權簽發該 vct 的角色(manifest 鍵)——遺留(a)之綁定表,動態查 AID,不硬編字面值。 */
 const VCT_ISSUER_ROLE: Record<string, string> = {
-  [PCF_AGGREGATE_VCT]: 'hunggang',
-  [PCF_UPSTREAM_VCT]: 'thepviet',
+  [PCF_AGGREGATE_VCT]: 'fab',
+  [PCF_UPSTREAM_VCT]: 'yarn',
+  [PCF_DYEING_VCT]: 'dye',
 };
 
-/** M2 mandate 之唯一合法簽發角色(Bruck 永續長 ECR;M2 修正:mandate iss 必須綁預期角色)。 */
-const M2_ISSUER_ROLE = 'bruck_cso';
+/** M2 mandate 之唯一合法簽發角色(Brand 永續長 ECR;M2 修正:mandate iss 必須綁預期角色)。 */
+const M2_ISSUER_ROLE = 'brand_cso';
 
 /**
  * F8(Codex adversarial review):協定保留 claim——非應用層 claim,不與 mandate.allowed_claims 比對。
@@ -118,7 +121,7 @@ export function verifyVleiChainSandbox(credentialSaid: string, opts: { timeoutMs
 
 /**
  * 驗 M2 mandate_jwt 簽章(供第 5 項雙向約束比對 allowed_claims;僅供本地比對用,不重跑完整閘道管線)。
- * M2 修正(C1 同源):簽章鑰必須是 Bruck 永續長 ECR AID(manifest 動態取),且 payload.iss 必須
+ * M2 修正(C1 同源):簽章鑰必須是 Brand 永續長 ECR AID(manifest 動態取),且 payload.iss 必須
  * 等於該 AID——header.kid 取鑰卻不校驗 iss,等於讓任何 manifest 內的鑰都能簽出「M2 委任狀」。
  */
 async function verifyMandateForComparison(
@@ -129,12 +132,12 @@ async function verifyMandateForComparison(
   if (!expectedIssuerAid) return { ok: false, error: `manifest 缺少 ${M2_ISSUER_ROLE} 角色,無法確認 M2 mandate 簽發者` };
   try {
     const header = decodeProtectedHeader(mandateJwt);
-    // F5:typ 必須為 "mandate+jwt"(不驗 typ 等於接受任何 Bruck-CSO 鑰簽出的 JWT 冒充委任狀)。
+    // F5:typ 必須為 "mandate+jwt"(不驗 typ 等於接受任何 Brand-CSO 鑰簽出的 JWT 冒充委任狀)。
     if (header.typ !== 'mandate+jwt') {
       return { ok: false, error: `M2 mandate header.typ 不是 "mandate+jwt"(typ=${header.typ ?? '(無)'})` };
     }
     if (header.kid !== expectedIssuerAid) {
-      return { ok: false, error: `M2 mandate 簽章鑰(kid=${header.kid ?? '(無)'})非 Bruck 永續長 ECR AID(${expectedIssuerAid})` };
+      return { ok: false, error: `M2 mandate 簽章鑰(kid=${header.kid ?? '(無)'})非 Brand 永續長 ECR AID(${expectedIssuerAid})` };
     }
     const key = resolvePublicKeyFromManifest(manifest)(expectedIssuerAid);
     if (!key) return { ok: false, error: `找不到 mandate 簽發者公鑰(kid=${expectedIssuerAid})` };
@@ -153,7 +156,7 @@ async function verifyMandateForComparison(
 
 /**
  * F4:驗證閘道 receipt(present() 為無 key-binding 的裸 bearer,單靠 presentation 無法防重放/配對他 mandate)。
- * 綁定:receipt 簽章(鴻鋼閘道 LE 鑰)+ typ/iss/aud + presentation_hash == sha256(本 presentation)
+ * 綁定:receipt 簽章(FAB閘道 LE 鑰)+ typ/iss/aud + presentation_hash == sha256(本 presentation)
  * + mandate_jti == 本次驗證所用 mandate 之 jti + request_nonce 存在 + iat 新鮮度。任一不符 → 拒。
  */
 async function verifyGatewayReceipt(
@@ -161,8 +164,8 @@ async function verifyGatewayReceipt(
   ctx: { presentationSdJwt: string; mandateJti: string; manifest: Manifest; nowMs: number },
 ): Promise<{ ok: boolean; error?: string }> {
   if (!receipt) return { ok: false, error: '缺少閘道 receipt(無 key-binding 的裸 presentation 不予採信;重放/擷取無法憑此通過)' };
-  const gatewayAid = ctx.manifest.hunggang?.aid;
-  if (!gatewayAid) return { ok: false, error: 'manifest 缺 hunggang 閘道角色' };
+  const gatewayAid = ctx.manifest.fab?.aid;
+  if (!gatewayAid) return { ok: false, error: 'manifest 缺 fab 閘道角色' };
   const key = resolvePublicKeyFromManifest(ctx.manifest)(gatewayAid);
   if (!key) return { ok: false, error: '找不到閘道公鑰' };
   let payload: Record<string, unknown>;
@@ -191,7 +194,7 @@ async function verifyGatewayReceipt(
   return { ok: true };
 }
 
-/** Bruck 端驗證主流程——依序執行 5 項檢查,任一失敗即回傳(已完成之檢查全數附在 checks 內)。 */
+/** Brand 端驗證主流程——依序執行 5 項檢查,任一失敗即回傳(已完成之檢查全數附在 checks 內)。 */
 export async function verifyPresentation(input: VerifyPresentationInput): Promise<VerifyPresentationResult> {
   const checks: VerifyCheck[] = [];
   const nowMs = input.now ?? Date.now();
@@ -210,7 +213,7 @@ export async function verifyPresentation(input: VerifyPresentationInput): Promis
   // 2) vct ↔ 簽發者 AID 綁定(遺留 a + C1)。
   //    C1:綁定的對象是「實際驗過章的鑰」(sigResult.kid),不是 payload 宣稱的 iss。
   //    舊版只比對 payload.iss,而取鑰走 header.kid,兩者從不互相校驗——攻擊者用自己的鑰簽章、
-  //    把 iss 填成鴻鋼 AID 即可通過全部檢查(PoC 已證實可偽造 carbon_total)。此處三個條件同時要求:
+  //    把 iss 填成FAB AID 即可通過全部檢查(PoC 已證實可偽造 carbon_total)。此處三個條件同時要求:
   //      (i) 實際簽章者 = 該 vct 唯一被授權的角色 AID;(ii) payload.iss = 實際簽章者(不得脫鉤)。
   const vct = typeof payload.vct === 'string' ? payload.vct : undefined;
   const expectedRole = vct ? VCT_ISSUER_ROLE[vct] : undefined;
@@ -245,7 +248,7 @@ export async function verifyPresentation(input: VerifyPresentationInput): Promis
   // 4) Status List(credentials 清單;F6:傳入預期清單 URI + now,並要求 credential 的 status 參照 URI
   //    與被查清單一致——同鑰簽的 mandates token 不得冒充 credentials token,陳舊 token 亦拒)。
   const statusEntry = (payload.status as { status_list?: { idx?: number; uri?: string } } | undefined)?.status_list;
-  const statusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.hunggang.aid);
+  const statusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.fab.aid);
   const credentialsListToken = readStatusListToken('credentials');
   let statusOk = false;
   let statusDetail: string | undefined;
@@ -275,7 +278,7 @@ export async function verifyPresentation(input: VerifyPresentationInput): Promis
   // 6) F5:mandate 撤銷狀態(mandates Token Status List;被撤 mandate 不得再授權任何揭露)。
   const mStatus = mandateResult.payload.status?.status_list;
   const mandatesListToken = readStatusListToken('mandates');
-  const mandateStatusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.hunggang.aid);
+  const mandateStatusIssuerKey = resolvePublicKeyFromManifest(input.manifest)(input.manifest.fab.aid);
   let mandateStatusOk = false;
   let mandateStatusDetail: string | undefined;
   if (mStatus?.idx == null || mStatus.uri !== statusListUri('mandates') || !mandateStatusIssuerKey || !mandatesListToken) {
@@ -293,10 +296,25 @@ export async function verifyPresentation(input: VerifyPresentationInput): Promis
   });
   if (!mandateStatusOk) return { ok: false, checks, payload };
 
-  // 7) F8:雙向約束——從實際提交之 disclosures 推導 claim 名(payload 內非協定保留 key),逐一比對
-  //    mandate.allowed_claims。舊版只看硬編 PCF_AGGREGATE_SD_FIELDS,授權簽發者新增揭露之新 claim 會 fail-open。
+  // 7) F8:雙向約束——從實際提交之 disclosures(base64url JSON [salt, key, value])推導 claim 名,
+  //    逐一比對 mandate.allowed_claims。舊版只看硬編 PCF_AGGREGATE_SD_FIELDS,授權簽發者新增揭露之
+  //    新 claim 會 fail-open。公開層(非 SD)欄位為憑證恆常明文、無揭露決策,不在此比對——其不含
+  //    排放數字由 H2 檢查獨立把關;先前以 payload keys 近似,v3 公開層欄位增多後會把恆常明文誤判
+  //    為逾越揭露。disclosure 解析失敗一律 fail-closed(視為逾越)。
   const allowedClaims = mandateResult.payload.allowed_claims;
-  const disclosedAppClaims = Object.keys(payload).filter((k) => !RESERVED_CLAIM_NAMES.has(k));
+  const disclosedAppClaims: string[] = [];
+  try {
+    const { disclosures } = splitSdJwt(input.presentationSdJwt);
+    for (const d of disclosures) {
+      const arr = JSON.parse(Buffer.from(d, 'base64url').toString('utf-8')) as unknown[];
+      // 3 元素 = 物件屬性 [salt, name, value];2 元素 = 陣列元素(無 claim 名,本 demo 不使用)。
+      const name = arr.length === 3 && typeof arr[1] === 'string' ? arr[1] : null;
+      if (name && !RESERVED_CLAIM_NAMES.has(name)) disclosedAppClaims.push(name);
+      else if (!name) disclosedAppClaims.push('(不可解析之 disclosure)');
+    }
+  } catch {
+    disclosedAppClaims.push('(disclosure 解析失敗)');
+  }
   const overreach = disclosedAppClaims.filter((f) => !allowedClaims.includes(f));
   const boundaryOk = overreach.length === 0;
   checks.push({

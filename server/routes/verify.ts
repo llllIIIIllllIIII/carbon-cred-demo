@@ -1,5 +1,5 @@
 /**
- * 幕 3 Bruck 端路由(架構決策 §4):POST /api/verify — 線上呼叫版(Tab3 展示用);
+ * 幕 3 Brand 端路由(架構決策 §4):POST /api/verify — 線上呼叫版(Tab3 展示用);
  * 核心邏輯全在 server/creds/verifyPresentation.ts,與 scripts/verify-offline.ts 共用同一函式。
  */
 import type { FastifyInstance } from 'fastify';

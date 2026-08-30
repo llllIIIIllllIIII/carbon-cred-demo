@@ -4,6 +4,8 @@
 data/keys/
 # 資料庫檔
 db/*.sqlite*
+# 幕 6 make tamper 之 row-level 還原備份(側車檔;非資料庫本體)
+db/.tamper-backup.json
 # 依賴
 node_modules/
 .venv/

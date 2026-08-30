@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 賽前預簽:GLEIF(root)→ QVI(delegated)→ 4 家法人 LE → 2 張 ECR
+# 賽前預簽:GLEIF(root)→ QVI(delegated)→ 5 家法人 LE → 2 張 ECR
 # 產出:.vlei/(私鑰,gitignored)+ data/vlei/(公開呈現包 + manifest.json)
 # 全案任何程式不得寫死 SAID,一律讀 manifest。
 set -euo pipefail
@@ -20,45 +20,50 @@ chmod 600 .vlei/state.json
 
 echo "== [2/6] LEI(20 碼,ISO 17442-1 檢核碼由 sandbox lei make 產生)=="
 LEI_QVI=$(run lei make 984500QVISANDBOX00)
-LEI_HUNGGANG=$(run lei make 984500HUNGGANG0001)
-LEI_THEPVIET=$(run lei make 984500THEPVIET0001)
-LEI_BRUCK=$(run lei make 984500BRUCKDEU0001)
-LEI_TWVERIFY=$(run lei make 984500TWVERIFY0001)
-echo "  hunggang=$LEI_HUNGGANG thepviet=$LEI_THEPVIET bruck=$LEI_BRUCK taiwanverify=$LEI_TWVERIFY"
+LEI_YARN=$(run lei make 984500SOIXANHVN001)
+LEI_FAB=$(run lei make 984500CHENGFANG001)
+LEI_DYE=$(run lei make 984500CAIHEDYE0001)
+LEI_BRAND=$(run lei make 984500NORDLICHT001)
+LEI_CB=$(run lei make 984500LOWLANDCB001)
+echo "  yarn=$LEI_YARN fab=$LEI_FAB dye=$LEI_DYE brand=$LEI_BRAND cb=$LEI_CB"
 
 echo "== [3/6] actors =="
 run actor add --alias gleif --registry gleifRegistry --root
 run actor add --alias qvi --registry qviRegistry --delegator gleif
-run actor add --alias thepviet --registry thepvietRegistry
-run actor add --alias hunggang --registry hunggangRegistry
-run actor add --alias bruck --registry bruckRegistry
-run actor add --alias taiwanverify --registry taiwanverifyRegistry
+run actor add --alias yarn --registry yarnRegistry
+run actor add --alias fab --registry fabRegistry
+run actor add --alias dye --registry dyeRegistry
+run actor add --alias brand --registry brandRegistry
+run actor add --alias cb --registry cbRegistry
 # person actor 正確建法(vendor SKILL.md/demo 實測):不掛 registry、不設 delegator
-run actor add --alias hunggang-cfo
-run actor add --alias bruck-cso
+run actor add --alias fab-cfo
+run actor add --alias brand-cso
 
-echo "== [4/6] issue(QVI → 4 LE → 2 ECR;ECR 由 LE 以 --auth 直發)=="
+echo "== [4/6] issue(QVI → 5 LE → 2 ECR;ECR 由 LE 以 --auth 直發)=="
 QVI_SAID=$(run issue --type qvi --issuer gleif --holder qvi --lei "$LEI_QVI" | said_of)
-THEPVIET_SAID=$(run issue --type le --issuer qvi --holder thepviet --lei "$LEI_THEPVIET" --auth "$QVI_SAID" | said_of)
-HUNGGANG_SAID=$(run issue --type le --issuer qvi --holder hunggang --lei "$LEI_HUNGGANG" --auth "$QVI_SAID" | said_of)
-BRUCK_SAID=$(run issue --type le --issuer qvi --holder bruck --lei "$LEI_BRUCK" --auth "$QVI_SAID" | said_of)
-TWVERIFY_SAID=$(run issue --type le --issuer qvi --holder taiwanverify --lei "$LEI_TWVERIFY" --auth "$QVI_SAID" | said_of)
-HG_CFO_SAID=$(run issue --type ecr --issuer hunggang --holder hunggang-cfo --lei "$LEI_HUNGGANG" \
-  --person "Lin Hsiu-Feng" --context-role "Finance Director" --auth "$HUNGGANG_SAID" | said_of)
-BR_CSO_SAID=$(run issue --type ecr --issuer bruck --holder bruck-cso --lei "$LEI_BRUCK" \
-  --person "Anna Schäfer" --context-role "Chief Sustainability Officer" --auth "$BRUCK_SAID" | said_of)
+YARN_SAID=$(run issue --type le --issuer qvi --holder yarn --lei "$LEI_YARN" --auth "$QVI_SAID" | said_of)
+FAB_SAID=$(run issue --type le --issuer qvi --holder fab --lei "$LEI_FAB" --auth "$QVI_SAID" | said_of)
+DYE_SAID=$(run issue --type le --issuer qvi --holder dye --lei "$LEI_DYE" --auth "$QVI_SAID" | said_of)
+BRAND_SAID=$(run issue --type le --issuer qvi --holder brand --lei "$LEI_BRAND" --auth "$QVI_SAID" | said_of)
+CB_SAID=$(run issue --type le --issuer qvi --holder cb --lei "$LEI_CB" --auth "$QVI_SAID" | said_of)
+HG_CFO_SAID=$(run issue --type ecr --issuer fab --holder fab-cfo --lei "$LEI_FAB" \
+  --person "Lin Hsiu-Feng" --context-role "Finance Director" --auth "$FAB_SAID" | said_of)
+BR_CSO_SAID=$(run issue --type ecr --issuer brand --holder brand-cso --lei "$LEI_BRAND" \
+  --person "Anna Schäfer" --context-role "Chief Sustainability Officer" --auth "$BRAND_SAID" | said_of)
 
 echo "== [5/6] present(每張被驗憑證匯出自足呈現包)+ verify fail-fast =="
 mkdir -p data/vlei
-run present --said "$THEPVIET_SAID" --out data/vlei/thepviet.presentation.json
-run present --said "$HUNGGANG_SAID" --out data/vlei/hunggang.presentation.json
-run present --said "$BRUCK_SAID" --out data/vlei/bruck.presentation.json
-run present --said "$TWVERIFY_SAID" --out data/vlei/taiwanverify.presentation.json
-run present --said "$HG_CFO_SAID" --out data/vlei/hunggang_cfo.presentation.json
-run present --said "$BR_CSO_SAID" --out data/vlei/bruck_cso.presentation.json
+run present --said "$YARN_SAID" --out data/vlei/yarn.presentation.json
+run present --said "$FAB_SAID" --out data/vlei/fab.presentation.json
+run present --said "$DYE_SAID" --out data/vlei/dye.presentation.json
+run present --said "$BRAND_SAID" --out data/vlei/brand.presentation.json
+run present --said "$CB_SAID" --out data/vlei/cb.presentation.json
+run present --said "$HG_CFO_SAID" --out data/vlei/fab_cfo.presentation.json
+run present --said "$BR_CSO_SAID" --out data/vlei/brand_cso.presentation.json
 run verify --said "$HG_CFO_SAID" >/dev/null
 run verify --said "$BR_CSO_SAID" >/dev/null
-echo "  ECR × 2 verify: chain verified"
+run verify --said "$DYE_SAID" >/dev/null
+echo "  ECR × 2 + dye LE verify: chain verified"
 
 echo "== [6/6] manifest.json(公開材料:公鑰自 sandbox 匯出)=="
 "$PY" - <<'PYEOF'
@@ -66,12 +71,13 @@ import json
 
 state = json.load(open('.vlei/state.json', encoding='utf-8'))
 roles = {
-    'thepviet':     dict(alias='thepviet',     kind='le',  legal_name='Thép Việt Wire Co.'),
-    'hunggang':     dict(alias='hunggang',     kind='le',  legal_name='鴻鋼精密扣件股份有限公司'),
-    'bruck':        dict(alias='bruck',        kind='le',  legal_name='Bruck & Söhne GmbH'),
-    'taiwanverify': dict(alias='taiwanverify', kind='le',  legal_name='台驗國際股份有限公司'),
-    'hunggang_cfo': dict(alias='hunggang-cfo', kind='ecr', legal_name='鴻鋼財務主管 Lin Hsiu-Feng'),
-    'bruck_cso':    dict(alias='bruck-cso',    kind='ecr', legal_name='Bruck 永續長 Anna Schäfer'),
+    'yarn':      dict(alias='yarn',      kind='le',  legal_name='Sợi Xanh Việt Co., Ltd.(越藍紗業)'),
+    'fab':       dict(alias='fab',       kind='le',  legal_name='誠紡實業股份有限公司'),
+    'dye':       dict(alias='dye',       kind='le',  legal_name='彩合染整股份有限公司'),
+    'brand':     dict(alias='brand',     kind='le',  legal_name='Nordlicht Sports AG'),
+    'cb':        dict(alias='cb',        kind='le',  legal_name='Lowland Certification B.V.'),
+    'fab_cfo':   dict(alias='fab-cfo',   kind='ecr', legal_name='誠紡財務主管 Lin Hsiu-Feng'),
+    'brand_cso': dict(alias='brand-cso', kind='ecr', legal_name='Nordlicht 永續長 Anna Schäfer'),
 }
 creds = state['credentials']
 
@@ -104,4 +110,4 @@ PYEOF
 # data/vlei/ 為公開材料(呈現包 + manifest),放寬回一般可讀(umask 077 會產出 600)
 chmod 644 data/vlei/*.json
 
-echo "presign 完成:data/vlei/manifest.json + 6 份呈現包"
+echo "presign 完成:data/vlei/manifest.json + 7 份呈現包"

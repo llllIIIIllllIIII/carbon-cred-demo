@@ -1,79 +1,117 @@
 /**
  * 幕 2 路由(架構決策 §4):
- *   POST /api/aggregate — 讀該案上游 pcf_upstream(未簽發則依幕 1 邏輯先簽)→ 以持有者身分
- *     消費前先驗上游簽章(manifest 公鑰,驗不過回 CODES.CREDENTIAL_SIG_INVALID,不得跳過)→
- *     程式計算聚合(規格v2 §4.3)→ 經 server/keys.ts 載入鴻鋼 sandbox LE AID 鑰簽 pcf_aggregate →
- *     入 credentials 表。pcf_aggregate 不含上游任何明細欄位,precursor_ref 僅留上游憑證
- *     id + sha256 hash(藍圖:150)。
+ *   POST /api/aggregate — 呼叫 issuePcfAggregate() 之 ensureInputs(v3.1 四輸入:tc_rcs、
+ *     ccs_scope_cert、pcf_upstream、pcf_dyeing;未簽發則依前置邏輯先簽)→ 以持有者身分消費前
+ *     三張外部憑證皆先驗章(manifest 公鑰,驗不過回 CODES.CREDENTIAL_SIG_INVALID,不得跳過)、
+ *     ccs_scope_cert 另驗簽章/效期/Status List → v3.1 聚合前核對(tc_ref/ccs_scope_ref 綁定、
+ *     分包商清單;不符回 TC_REF_MISMATCH / SCOPE_CERT_INVALID / CCS_SUBCONTRACTOR_NOT_LISTED)→
+ *     程式計算三段聚合(spec v3.1 §4.4)→ 經 server/keys.ts 載入 FAB sandbox LE AID 鑰簽
+ *     pcf_aggregate → 入 credentials 表。pcf_aggregate 不含上游任何明細欄位,precursor_refs
+ *     留三張外部憑證(tc_rcs、pcf_upstream、pcf_dyeing)id + sha256 hash;不放稅則碼(無 hs6)。
  * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / issuePcfAggregate 取得。
  *
  * Codex 審查發現 2(case_id 靜默塌縮)修法:過去 `case_id === 'B' ? 'B' : 'A'` 會讓缺值或打錯字
  * 一律塌成 'A' 並真簽發憑證。改為顯式驗證,非 'A'/'B' 一律 400 + CODES.INVALID_CASE_ID。
+ *
+ * Opus 獨立驗證 MEDIUM #2 修法:issuePcfAggregate 拋出的所有驗證/核對失敗(CREDENTIAL_SIG_INVALID、
+ * VCT_ISSUER_UNAUTHORIZED、CREDENTIAL_REVOKED、TC_REF_MISMATCH、CCS_SUBCONTRACTOR_NOT_LISTED、
+ * SCOPE_CERT_INVALID)一律先經 server/audit.ts 之 recordDecision(effect=DENY)入鏈,再回 HTTP
+ * 錯誤——比照 CLAUDE.md 鐵則「所有 PERMIT/DENY/RELEASE/REPLAY_DETECTED 經 server/audit.ts 唯一
+ * 入口」,聚合路徑此前完全未入鏈(PoC:502 後 decisions/audit_chain 列數不變)。
+ *
+ * Codex 審查 P2 修法:ensureInputs()→issuePcfUpstream() 在入庫 tc_rcs 缺失/驗章失敗/簽發者非 cb 時
+ * 拋出 TcRefMissingError(reasonCode=TC_REF_MISMATCH),此前未被下方 catch 的 instanceof 涵蓋,
+ * 落到 500(未入鏈)而非承諾的 reason-coded 502 DENY——與 UpstreamVerificationError/
+ * AggregateGuardError 同一 catch 分支處理。
  */
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
-import { issuePcfAggregate, UpstreamVerificationError } from '../creds/pcfAggregate';
+import { issuePcfAggregate, UpstreamVerificationError, AggregateGuardError } from '../creds/pcfAggregate';
+import { TcRefMissingError } from '../creds/pcfUpstream';
+import { recordDecision } from '../audit';
 import { CODES } from '../../shared/codes';
-import type { PcfAggregateCaseId } from '../../shared/types';
+import type { PcfCaseId } from '../../shared/types';
+
+const ACTION = 'IssuePcfAggregate';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function parseCaseId(caseId: unknown): PcfAggregateCaseId | null {
+function parseCaseId(caseId: unknown): PcfCaseId | null {
   return caseId === 'A' || caseId === 'B' ? caseId : null;
 }
 
 export function registerAggregateRoutes(app: FastifyInstance): void {
   app.post('/api/aggregate', async (req, reply) => {
+    const query = (req.query ?? {}) as { case?: string; reissue?: string };
     const body = (req.body ?? {}) as { case_id?: string };
-    const caseId = parseCaseId(body.case_id);
+    const caseId = parseCaseId(query.case ?? body.case_id);
     if (!caseId) {
       return reply.code(400).send({ error: 'case_id 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
     }
+    // 幕 6:reissue=1(supersede 語意)——翻銷舊 aggregate slot、以備援 idx 簽新 aggregate
+    // (server/creds/pcfAggregate.ts issuePcfAggregate 之 opts.reissue;見該檔頭註解)。
+    const reissue = query.reissue === '1';
 
     const db = openDb();
     try {
-      // issuePcfAggregate 內部已原子落庫(遺留 c:insertCredentialIfAbsent,比照 store.ts 模式)——
-      // 本路由不得再自行 upsertCredential,否則會用「這次呼叫者自己的版本」覆寫落庫勝者,
-      // 重新引入遺留 c 要修的併發競態。
+      // issuePcfAggregate 內部已原子落庫(遺留 c:insertCredentialIfAbsent,比照 store.ts 模式;
+      // reissue 路徑則為 upsertCredential 之 supersede 落庫)——本路由不得再自行寫 credentials 表,
+      // 否則會用「這次呼叫者自己的版本」覆寫落庫勝者,重新引入遺留 c 要修的併發競態。
       let issuance: Awaited<ReturnType<typeof issuePcfAggregate>>;
       try {
-        issuance = await issuePcfAggregate(db, caseId);
+        issuance = await issuePcfAggregate(db, caseId, { reissue });
       } catch (e) {
-        if (e instanceof UpstreamVerificationError) {
+        // v3.1:UpstreamVerificationError(CREDENTIAL_SIG_INVALID / VCT_ISSUER_UNAUTHORIZED /
+        // CREDENTIAL_REVOKED)、AggregateGuardError(TC_REF_MISMATCH / SCOPE_CERT_INVALID /
+        // CCS_SUBCONTRACTOR_NOT_LISTED)與 TcRefMissingError(ensureInputs 內
+        // issuePcfUpstream 因入庫 tc_rcs 缺失/驗章失敗/簽發者非 cb 而拒簽;P2)皆屬「輸入信任鏈
+        // 未通過核對」——與既有 CREDENTIAL_SIG_INVALID 一致回 502 + reason_code;入鏈後才回應(MEDIUM #2)。
+        if (e instanceof UpstreamVerificationError || e instanceof AggregateGuardError || e instanceof TcRefMissingError) {
+          recordDecision(db, {
+            action: ACTION,
+            effect: 'DENY',
+            reason_code: e.reasonCode,
+            case_id: caseId,
+            context: { error: e.message },
+          });
           return reply.code(502).send({ error: e.message, reason_code: e.reasonCode });
         }
         return reply.code(500).send({ error: errorMessage(e) });
       }
 
-      // F1(Codex adversarial review):**不**回完整可再揭露的 SD-JWT,也不回含三個永不揭露分項的
-      // 完整 claims payload。pcf_aggregate 是鴻鋼內部簽發物;若把完整 token 交給任意(未授權)跨組織
-      // 呼叫者,對方即可持有並自行 present precursor_contribution / self_direct / self_indirect
-      // (NEVER_DISCLOSABLE 三欄),繞過 /api/disclose 的 mandate + Cedar 逐 claim 最小揭露邊界。
-      // 跨組織揭露一律走 POST /api/disclose;此端點只回「鴻鋼自有閘道頁」所需之內部檢視(疊層圖分項值 +
-      // 公開/合約層卡片欄位),不含任何可被他方持有、再揭露的簽章 token。
+      // F1(Codex adversarial review):**不**回完整可再揭露的 SD-JWT,也不回含三個永不揭露分項欄位名
+      // 的完整 claims payload。pcf_aggregate 是 FAB 內部簽發物;若把完整 token 交給任意(未授權)跨組織
+      // 呼叫者,對方即可持有並自行 present pcf_yarn / pcf_knitting / pcf_dyeing(NEVER_DISCLOSABLE 三欄),
+      // 繞過 /api/disclose 的 mandate + Cedar 逐 claim 最小揭露邊界。
+      // 跨組織揭露一律走 POST /api/disclose;此端點只回「FAB 自有閘道頁」所需之內部檢視(三段疊層圖真值 +
+      // 公開/品牌層卡片欄位),不含任何可被他方持有、再揭露的簽章 token。
       return {
         id: issuance.id,
         case_id: issuance.caseId,
-        // 疊層熱點圖三段真值(鴻鋼自己的資料,顯示於鴻鋼自有閘道頁)——非可攜、非簽章 token。
+        reissued: reissue,
+        // 三段疊層熱點圖真值(FAB 自己的資料,顯示於 FAB 自有閘道頁)——非可攜、非簽章 token。
         breakdown: {
-          precursor_contribution_tco2e_per_t: issuance.breakdown.precursorContribution,
-          self_direct_tco2e_per_t: issuance.breakdown.selfDirect,
-          self_indirect_tco2e_per_t: issuance.breakdown.selfIndirect,
-          carbon_total_tco2e_per_t: issuance.breakdown.total,
+          pcf_yarn: issuance.breakdown.pcfYarn,
+          pcf_knitting: issuance.breakdown.pcfKnitting,
+          pcf_dyeing: issuance.breakdown.pcfDyeing,
+          pcf_total: issuance.breakdown.total,
         },
-        // 憑證卡顯示用之公開/合約層欄位(明列,非整包 claims;三個永不揭露分項只在 breakdown 出現)。
-        cn_code: issuance.payload.cn_code,
-        carbon_price_paid_origin: issuance.payload.carbon_price_paid_origin,
-        precursor_ref: issuance.precursorRef,
+        // 憑證卡顯示用之公開/品牌層欄位(明列,非整包 claims;三個永不揭露分項只在 breakdown 出現)。
+        // v3.1:移除 hs6(不放稅則碼);加 ccs_scope_ref(布廠自己的 SC,見 Gateway.tsx SC 小卡)。
+        product: issuance.payload.product,
+        origin: issuance.payload.origin,
+        ccs_scope_ref: issuance.payload.ccs_scope_ref,
+        quantity_kg: issuance.payload.quantity_kg,
+        precursor_refs: issuance.precursorRefs,
         status: issuance.payload.status.status_list,
         issued_at: issuance.issuedAt,
         valid_from: issuance.validFrom,
         valid_until: issuance.validUntil,
         issuer_party: issuance.issuerParty,
         holder_party: issuance.holderParty,
-        // L3 修正:合約碳排門檻改由後端提供(data/seed.json),前端疊層熱點圖不再寫死 2.0。
+        // L3 修正:合約碳排門檻改由後端提供(data/seed.json),前端疊層熱點圖不再寫死門檻值。
         contract_carbon_max: issuance.contractCarbonMax,
       };
     } finally {

@@ -1,17 +1,17 @@
 /**
  * Phase 2 前端 demo 輔助路由(phase2-frontend-spec.md「workload 簽章取得(定案)」):
- * POST /api/demo/sign-disclose-request——模擬 Agent-2(Bruck 側)本地簽章。
+ * POST /api/demo/sign-disclose-request——模擬 Agent-2(Brand 側)本地簽章。
  *
- * 瀏覽器不得持有 workload 私鑰(CLAUDE.md);此路由代為以 bruck-workload 鑰(經
+ * 瀏覽器不得持有 workload 私鑰(CLAUDE.md);此路由代為以 brand-workload 鑰(經
  * server/keys.ts,一方一鑰)簽出 request_jws。前端仍須把簽好的 request_jws 完整
  * 送進 POST /api/disclose 走過整條驗證管線(mandate 簽章 → delegate_kid → Token
  * Status List → request_nonce → Cedar)——本路由不繞過、也不預先判定任何驗證結果,
  * 純粹是「private key 該放哪裡」的 demo 部署妥協,非正式 Agent-2 部署形態。
  *
  * ⚠ 正式部署必須移除此 route(M3,Phase 2 總驗收):這是一個**無認證的簽章 oracle**——
- * 任何能打到本機的呼叫者都能請 bruck-workload 鑰簽出 request_jws。demo 情境可接受
+ * 任何能打到本機的呼叫者都能請 brand-workload 鑰簽出 request_jws。demo 情境可接受
  * (實測無法藉此繞過任何驗證層:mandate 不存在/未聚合仍被擋,request_nonce 由伺服端亂數產生、
- * 呼叫者無法指定),但正式部署 Agent-2 應在 Bruck 側自行持鑰簽章,本路由不得存在。
+ * 呼叫者無法指定),但正式部署 Agent-2 應在 Brand 側自行持鑰簽章,本路由不得存在。
  */
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
@@ -63,7 +63,7 @@ export function registerDemoRoutes(app: FastifyInstance): void {
       });
     }
 
-    const key = loadWorkloadKey('bruck-workload');
+    const key = loadWorkloadKey('brand-workload');
     const requestNonce = crypto.randomBytes(12).toString('base64url');
     const requestJws = await new SignJWT({
       mandate_id: body.mandate_id,

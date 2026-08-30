@@ -1,11 +1,11 @@
--- carbon-cred-demo 資料庫結構(9 張表;架構決策 §2)
+-- carbon-cred-demo 資料庫結構(11 張表;架構決策 §2;Phase 3a 新增 dossiers;Phase 3b 新增 credential_history)
 -- 所有識別碼與數值皆為合成資料。
 
 PRAGMA foreign_keys = ON;
 
 -- 1) 參與方(自 data/vlei/manifest.json 灌入;不寫死 SAID)
 CREATE TABLE IF NOT EXISTS parties (
-  id            TEXT PRIMARY KEY,          -- 角色鍵:thepviet / hunggang / bruck / taiwanverify / hunggang_cfo / bruck_cso
+  id            TEXT PRIMARY KEY,          -- 角色鍵:yarn / fab / brand / cb / fab_cfo / brand_cso
   kind          TEXT NOT NULL,             -- 'le' | 'ecr'
   alias         TEXT NOT NULL,             -- sandbox actor alias
   legal_name    TEXT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS mandates (
   id            TEXT PRIMARY KEY,          -- 'M1' | 'M2'
   jti           TEXT NOT NULL UNIQUE,      -- mandate 唯一 ID(防偽引用)
   issuer_party  TEXT NOT NULL REFERENCES parties(id),
-  aud           TEXT NOT NULL,             -- 受眾(hunggang-gateway)
+  aud           TEXT NOT NULL,             -- 受眾(fab-gateway)
   purpose       TEXT,
   agent_id      TEXT,
   delegate_kid  TEXT NOT NULL,             -- 綁定之 workload 公鑰 kid
@@ -121,4 +121,46 @@ CREATE TABLE IF NOT EXISTS status_lists (
   size          INTEGER NOT NULL,
   file          TEXT NOT NULL,             -- data/status/<name>.jwt
   updated_at    TEXT NOT NULL
+);
+
+-- 10) Dossier(幕 5 門檻與付款閘道;Phase 3a 新增)
+-- P3 五要件全過後由 fab-workload 鑰簽之 JWS(payload 含 build_hash/version/五項結果/
+-- 三張輸入憑證 hash/case/mandate_jti);財務主管 ECR 鑰簽 release 後狀態轉 RELEASED、
+-- 回填 release_jws 與 mock USD 電匯指令(payment_instruction_json)。
+-- (mandate_id, request_nonce) UNIQUE 為 POST /api/agent/run 之防重放最終防線,語意同
+-- presentations 表對 (mandate_id, request_nonce) 之 UNIQUE 用法。
+-- mandate_id 刻意不設 REFERENCES mandates(id)(比照 decisions.mandate_id 之既有慣例):
+-- 既有測項會 DELETE FROM mandates WHERE id='M1' 後重簽以驗證併發 insert-if-absent,
+-- dossiers 為歷史留痕表,不應因 mandate 列重建而被 FK 卡住。
+CREATE TABLE IF NOT EXISTS dossiers (
+  id                        TEXT PRIMARY KEY,
+  case_id                   TEXT NOT NULL,             -- 'A' | 'B' | 'C' | 'Cp'
+  mandate_id                TEXT NOT NULL,             -- 'M1'(對應 mandates.id,無 FK,理由見上)
+  mandate_jti               TEXT NOT NULL,
+  request_nonce             TEXT NOT NULL,
+  jws                       TEXT NOT NULL,             -- fab-workload 簽之 compact JWS
+  status                    TEXT NOT NULL,             -- 'PENDING_HUMAN' | 'RELEASED' | 'DEPENDS_REVOKED'
+  decision_id               INTEGER,                   -- 對應 P3 PERMIT 之 decisions.id
+  release_jws               TEXT,                      -- 財務主管 ECR 鑰簽之 release JWS(human-sign 後回填)
+  payment_instruction_json  TEXT,                      -- mock USD 電匯指令(human-sign 後回填;無錢包/RPC/鏈上)
+  created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+  released_at               TEXT,
+  UNIQUE (mandate_id, request_nonce)
+);
+
+-- 11) 憑證歷史封存(append-only;Codex 審查 P1-1 修法;Phase 3b 補)
+-- credentials 表僅保留「現況」一列(id 為 PRIMARY KEY,reissue 會 upsert 覆蓋)——Dossier JWS
+-- 內凍結的 credential_hashes 卻是「建卡當下那一版」的 sha256(sd_jwt);reissue 後 credentials
+-- 表已找不到舊版內容,若撤銷重驗只查「現況 case rows」會誤判撤銷前留存的 Dossier 為安全
+-- (現況已重簽、未撤銷),放行本應依據已撤銷憑證之付款。本表由 server/creds/store.ts 於每次
+-- insertCredentialIfAbsent/upsertCredential 落庫時一併寫入(以 sd_jwt 之 sha256 為主鍵,
+-- INSERT OR IGNORE,同內容只留一份)——查驗端(server/routes/agent.ts checkDossierInputsCurrent)
+-- 以 Dossier 凍結之 hash 查回「那一版」sd_jwt,重新驗章並讀其自身 status.status_list.idx 查現況
+-- 撤銷位,而非信任 DB 現況列。
+CREATE TABLE IF NOT EXISTS credential_history (
+  hash          TEXT PRIMARY KEY,          -- sha256(sd_jwt) hex
+  id            TEXT NOT NULL,             -- 憑證邏輯 id(如 pcf_dyeing-A;reissue 前後相同)
+  type          TEXT NOT NULL,
+  sd_jwt        TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );

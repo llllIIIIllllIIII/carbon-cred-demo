@@ -1,8 +1,8 @@
 /**
  * M1/M2 mandate 簽發(幕 3 前置;架構決策 §4:POST /api/mandates)。
  * 格式:compact signed JWT(jose,EdDSA),header { typ:"mandate+jwt", alg:"EdDSA", kid }。
- * 簽署者經 server/keys.ts 之 sandbox ECR 鑰(M1=鴻鋼財務主管、M2=Bruck 永續長);
- * delegate_kid 綁定對應 workload 公鑰(M1=hunggang-workload、M2=bruck-workload)。
+ * 簽署者經 server/keys.ts 之 sandbox ECR 鑰(M1=FAB財務主管、M2=Brand 永續長);
+ * delegate_kid 綁定對應 workload 公鑰(M1=fab-workload、M2=brand-workload)。
  *
  * M2 allowed_claims:幕 3 disclose 消費對象是 pcf_aggregate,而規格v2:155-157 列的是
  * pcf_upstream 欄位名,故做欄位映射後採 server/policy/claims.ts 之 M2_ALLOWED_CLAIMS——
@@ -16,22 +16,23 @@ import crypto from 'node:crypto';
 import { SignJWT } from 'jose';
 import { loadSandboxKey, loadWorkloadKey, type SandboxRole, type WorkloadName } from '../keys';
 import { statusListUri } from '../statuslist';
+import { readManifest } from '../manifest';
 import { M2_ALLOWED_CLAIMS } from '../policy/claims';
-import { PCF_UPSTREAM_PUBLIC_FIELDS, PCF_UPSTREAM_CUSTOMS_SD_FIELDS } from '../../shared/types';
+import { PCF_DYEING_PUBLIC_FIELDS, PCF_DYEING_BRAND_SD_FIELDS, PCF_AGGREGATE_BRAND_SD_FIELDS } from '../../shared/types';
 import type { MandateId, MandatePayload } from '../../shared/types';
 
 /** disclose 閘道之受眾(M1/M2 皆以此為 aud;impl-spec §2 request_jws payload 亦引用同一閘道)。 */
-export const GATEWAY_AUD = 'hunggang-gateway';
+export const GATEWAY_AUD = 'fab-gateway';
 
 /**
- * F4(Codex adversarial review)閘道 PERMIT receipt 之常數——閘道(鴻鋼)以 LE 鑰對每次 PERMIT
+ * F4(Codex adversarial review)閘道 PERMIT receipt 之常數——閘道(FAB)以 LE 鑰對每次 PERMIT
  * 簽出一份 receipt,綁定 presentation_hash + mandate_jti + request_nonce + audience + issued_at。
- * Bruck 端(/api/verify 與 verify-offline)以此 receipt 抓「擷取的 presentation 換 nonce/配對他 mandate
- * 重放」。常數放在無 DB 依賴的 mandate.ts,供閘道(discloseGateway)簽章端與 Bruck 驗證端共用同一定義。
+ * Brand 端(/api/verify 與 verify-offline)以此 receipt 抓「擷取的 presentation 換 nonce/配對他 mandate
+ * 重放」。常數放在無 DB 依賴的 mandate.ts,供閘道(discloseGateway)簽章端與 Brand 驗證端共用同一定義。
  */
 export const RECEIPT_TYP = 'gateway-receipt+jwt';
-/** receipt 受眾:Bruck 驗證方——綁 audience,使發給 Bruck 的 receipt 無法挪作他用。 */
-export const RECEIPT_AUDIENCE = 'bruck-verifier';
+/** receipt 受眾:Brand 驗證方——綁 audience,使發給 Brand 的 receipt 無法挪作他用。 */
+export const RECEIPT_AUDIENCE = 'brand-verifier';
 
 /** mandates Token Status List 之固定 idx(獨立於 credentials 清單,見 impl-spec §0):M1=0、M2=1。 */
 export const MANDATE_STATUS_IDX: Record<MandateId, number> = { M1: 0, M2: 1 };
@@ -41,8 +42,8 @@ export const MANDATE_STATUS_IDX: Record<MandateId, number> = { M1: 0, M2: 1 };
  * 與實際驗章鑰)。角色鍵同時是 server/keys.ts 的 SandboxRole 與 manifest 的角色鍵。
  */
 export const MANDATE_ISSUER_ROLE: Record<MandateId, SandboxRole> = {
-  M1: 'hunggang_cfo', // 鴻鋼財務主管 ECR
-  M2: 'bruck_cso', // Bruck 永續長 ECR
+  M1: 'fab_cfo', // FAB 布廠財務主管 ECR
+  M2: 'brand_cso', // BRAND 永續長 ECR
 };
 
 /** L2:mandate 自簽發日起至少保有的效期天數(避免敘事日期過期後 demo 全面 MANDATE_EXPIRED)。 */
@@ -70,31 +71,39 @@ interface MandateDefinition {
 }
 
 const MANDATE_DEFS: Record<MandateId, MandateDefinition> = {
-  // M1(規格v2 §5.1;幕 3/4 無直接依賴,主要供幕 5 放行管線消費)。
+  // M1(spec v3 §5.1:FAB 財務部 → Agent-1,付染整費前檢查;幕 3/4 無直接依賴,主要供幕 5 放行管線消費)。
+  // allowed_claims = pcf_dyeing 公開層(不含 hash 欄)+ 品牌層 + pcf_aggregate 品牌層(Set 去重同名欄)。
   M1: {
     issuerRole: MANDATE_ISSUER_ROLE.M1,
-    delegateName: 'hunggang-workload',
-    allowedClaims: [...PCF_UPSTREAM_PUBLIC_FIELDS.filter((f) => !f.endsWith('_hash')), ...PCF_UPSTREAM_CUSTOMS_SD_FIELDS],
-    policyVersion: 'pol-2026-08-v2',
+    delegateName: 'fab-workload',
+    allowedClaims: [
+      ...new Set([
+        ...PCF_DYEING_PUBLIC_FIELDS.filter((f) => !f.endsWith('_hash')),
+        ...PCF_DYEING_BRAND_SD_FIELDS,
+        ...PCF_AGGREGATE_BRAND_SD_FIELDS,
+      ]),
+    ],
+    policyVersion: 'pol-2026-08-v3',
     validFrom: '2026-08-01',
     validUntil: '2026-09-30',
-    agentId: 'agent-stable-001',
+    agentId: 'agent-settlement-001',
     extra: {
       scope_tools: ['verify_vc', 'check_wallet_risk', 'emit_release_credential'],
       max_amount: 50000,
-      policy_thresholds: { carbon_max: 2.0, wallet_risk_max: 40, min_sources: 2 },
+      currency: 'USD',
+      policy_thresholds: { carbon_max: 9.5, wallet_risk_max: 40, min_sources: 2 },
     },
   },
-  // M2(規格v2 §5.2;幕 3/4 主線——Agent-2 出示查驗請求之委任狀)。
+  // M2(spec v3 §5.2;幕 3/4 主線——Agent-2 出示查驗請求之委任狀)。
   M2: {
     issuerRole: MANDATE_ISSUER_ROLE.M2,
-    delegateName: 'bruck-workload',
+    delegateName: 'brand-workload',
     allowedClaims: [...M2_ALLOWED_CLAIMS],
-    policyVersion: 'pol-2026-08-v2',
+    policyVersion: 'pol-2026-08-v3',
     validFrom: '2026-08-01',
     validUntil: '2026-09-30',
     queryCap: 10,
-    purpose: 'CBAM_quarterly_declaration',
+    purpose: 'brand_scope3_supplier_reporting',
   },
 };
 
@@ -122,6 +131,13 @@ export interface MandateIssuance {
 /** 簽出 M1 或 M2(sandbox ECR 鑰;delegate_kid 綁定對應 workload 公鑰)。不寫入 DB——由呼叫端負責原子落庫。 */
 export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
   const def = MANDATE_DEFS[id];
+  // M1 允許交易對手 = DYE 的 LEI(讀 manifest,不寫死 SAID/LEI;spec v3 §5.1)。
+  let extra = def.extra;
+  if (id === 'M1') {
+    const manifest = readManifest();
+    if (!manifest?.dye?.lei) throw new Error('manifest 缺 dye 角色(先跑 make setup)——M1 allowed_counterparties 需要 DYE LEI');
+    extra = { ...def.extra, allowed_counterparties: [manifest.dye.lei] };
+  }
   const signingKey = loadSandboxKey(def.issuerRole);
   const delegateKey = loadWorkloadKey(def.delegateName);
   const jti = crypto.randomUUID();
@@ -135,6 +151,17 @@ export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
   const validUntil = resolveValidUntil(def.validUntil, nowMs);
   const validFromSec = Math.floor(new Date(`${def.validFrom}T00:00:00Z`).getTime() / 1000);
   const validUntilSec = Math.floor(new Date(`${validUntil}T00:00:00Z`).getTime() / 1000);
+
+  // P1-2(Codex review):M1 的授權限額(max_amount/allowed_counterparties/policy_thresholds)
+  // 必須進**簽章** payload,不得只留在未簽的 mandates.extra_json——否則同一枚合法 M1 簽章
+  // 配合被竄改的 DB 欄位即可放行更高金額/更寬鬆碳排門檻/別的交易對手方。server/routes/agent.ts
+  // 之 P3 管線一律從已驗證的 MandatePayload 讀這三欄。M2 無此三欄,維持 undefined(不進 JSON)。
+  const m1Extra =
+    id === 'M1'
+      ? (extra as
+          | { max_amount?: number; allowed_counterparties?: string[]; policy_thresholds?: MandatePayload['policy_thresholds']; currency?: string }
+          | undefined)
+      : undefined;
 
   const payload: MandatePayload = {
     jti,
@@ -154,6 +181,12 @@ export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
     query_cap: def.queryCap,
     purpose: def.purpose,
     agent_id: def.agentId,
+    max_amount: m1Extra?.max_amount,
+    allowed_counterparties: m1Extra?.allowed_counterparties,
+    policy_thresholds: m1Extra?.policy_thresholds,
+    // P1-B(Codex review 第二輪):幣別亦簽進 payload,供 agent.ts checkInvoiceOk 比對
+    // invoice.currency,不得只讀未簽的 extra_json.currency。
+    currency: m1Extra?.currency,
   };
 
   const token = await new SignJWT(payload as unknown as Record<string, unknown>)
@@ -174,7 +207,7 @@ export async function issueMandate(id: MandateId): Promise<MandateIssuance> {
     mandateNonce,
     purpose: def.purpose,
     agentId: def.agentId,
-    extra: def.extra,
+    extra,
     statusIdx,
     statusUri,
     validFrom: def.validFrom,

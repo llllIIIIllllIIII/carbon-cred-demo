@@ -55,10 +55,21 @@ export interface MandatePayload extends MandateBase {
   query_cap?: number;
   purpose?: string;
   agent_id?: string;
+  /**
+   * M1 專屬授權限額(Codex review P1-2):必須在**簽章 payload** 內,不得只留在未簽的
+   * mandates.extra_json——否則同一枚合法 M1 簽章配合被竄改的 DB 欄位即可放行更高金額、
+   * 更寬鬆碳排門檻,或別的交易對手方。server/routes/agent.ts 之 P3 管線一律從已驗證的
+   * MandatePayload 讀這三欄,不讀 extra_json。M2 無此三欄,恆為 undefined。
+   */
+  max_amount?: number;
+  allowed_counterparties?: string[];
+  policy_thresholds?: { carbon_max: number; wallet_risk_max: number; min_sources: number };
+  /** Codex review 第二輪 P1-B:M1 約定幣別(USD),供 invoice_ok 比對 invoice.currency,同上理由簽章保護。 */
+  currency?: string;
 }
 
 /**
- * disclose request(幕 3/4)之 compact JWS payload——由 bruck-workload(或 hunggang-workload)鑰
+ * disclose request(幕 3/4)之 compact JWS payload——由 brand-workload(或 fab-workload)鑰
  * 簽章,header.kid 須等於對應 mandate.delegate_kid(impl-spec §2)。
  */
 export interface DiscloseRequestPayload {
@@ -79,54 +90,244 @@ export interface TrustedContext {
 
 export type DecisionEffect = 'PERMIT' | 'DENY' | 'RELEASE' | 'REPLAY_DETECTED';
 
+/** 揭露三層 tag(spec v3 §0.2 #7:公開/品牌/稽核;confidential 僅指紋)。 */
+export type ClaimTag = 'public' | 'brand' | 'audit' | 'confidential' | 'unknown';
+
 /**
- * pcf_upstream(Thép Việt 產品碳足跡 SD-JWT VC,幕 1)欄位三分法——
- * 出處:docs/demo情境設定與合成資料規格-v2.md:89-94。
- *
- * 公開層(非 SD 明文):cn_code/quantity_t/country_of_origin/簽發者(iss)/簽發日(iat)/
- *   status.status_list,加上四個機密項目的 commitment hash(「當一般 claim」— 藍圖:123 —
- *   不可撕、恆常可見,因為 hash 本身不洩漏原始資料)。
- * 海關層(SD 可撕,法定):specific_direct_embedded_emissions/production_route/carbon_price_paid_origin。
- * 客戶層(SD 可撕,合約):specific_indirect_embedded_emissions/electricity_mix_ref/
- *   installation_unlocode/dqr/primary_data_share。
- * 永不揭露(規格v2:94,含 2026-08 訪談 Q5 新增之 capacity_utilization):
- *   機台級能耗結構/PPA/配方/客戶名單 → 各自 SHA-256 commitment hash;
- *   排放係數表(含 capacity_utilization)→ emission_factor_table_hash。
+ * tc_rcs(CB 認證機構簽發的 Transaction Certificate,幕 1;spec v3.1 §4.2a)欄位三分法。
+ * 欄位用 Textile Exchange 官方 camelCase 鍵名原樣(ASR-104);TC 本身沒有碳數據(碳在 pcf_upstream)。
+ * A/B 兩案同一張(idx 9);seller_lei/buyer_lei 由 issuer 於簽發時自 manifest 取,不寫死。
+ */
+export const TC_RCS_PUBLIC_FIELDS = [
+  'tcNo',
+  'tcStandard',
+  'tcProductStandardLabelGrade',
+  'tcProductCategoryCode',
+  'tcProductDetailCode',
+  'tcCertifiedRawMaterialCountryOrArea',
+  'sellerTeId',
+  'buyerTeId',
+  'seller_lei',
+  'buyer_lei',
+  'volume_reconciled',
+  'tcShipmentInvoiceReferences_hash',
+] as const;
+
+export const TC_RCS_BRAND_SD_FIELDS = [
+  'tcProductRawMaterialCode',
+  'tcProductRawMaterialPercentage',
+  'tcProductCertifiedWeight',
+  'tcShipmentDate',
+  'tcShipmentNo',
+  'inputTcNo',
+  'tcProductLastProcessorName',
+  'tcProductLastProcessorCountry',
+] as const;
+
+/** pcf_upstream 之 tc_ref(公開層)——綁定 tc_rcs 之 id/tcNo/簽發者 LEI/雜湊。 */
+export interface TcRef {
+  id: string;
+  tcNo: string;
+  issuer_lei: string;
+  hash: string;
+}
+
+/** pcf_dyeing / pcf_aggregate 之 ccs_scope_ref(公開層)——綁定 ccs_scope_cert 之編號/雜湊。 */
+export interface CcsScopeRef {
+  sc_no: string;
+  hash: string;
+}
+
+/** ccs_scope_cert.associated_subcontractors 之單一分包商(CCS-101 C5.2.1:附屬分包商,列於委託組織 SC 下受稽核)。 */
+export interface AssociatedSubcontractor {
+  lei: string;
+  name: string;
+  process: string;
+  audited: boolean;
+}
+
+/**
+ * ccs_scope_cert(CB 認證機構簽發之布廠 Scope Certificate,seed 時簽;spec v3.1 §4.5)——
+ * 全部公開層(非 SD);holder_lei/cb_lei/associated_subcontractors[].lei 由 issuer 於簽發時自
+ * manifest 取,不寫死;idx 10;一年效期。
+ */
+export const CCS_SCOPE_CERT_FIELDS = [
+  'sc_no',
+  'holder_lei',
+  'holder_name',
+  'standards',
+  'processes',
+  'associated_subcontractors',
+  'cb_lei',
+  'cb_name',
+  'valid_from',
+  'valid_until',
+] as const;
+
+/**
+ * pcf_upstream(YARN 紗廠碳足跡 SD-JWT VC,幕 1;spec v3.1 §4.2b)欄位三分法——
+ * 公開層帶 tc_ref 綁定 tc_rcs(4.2a);簽發前必先取入庫 tc_rcs,不存在則拒簽(TC_REF_MISMATCH)。
+ * A/B 兩案紗憑證相同(差異在染整段)。
  */
 export const PCF_UPSTREAM_PUBLIC_FIELDS = [
-  'cn_code',
-  'quantity_t',
+  'tc_ref',
+  'product_code',
   'country_of_origin',
-  'machine_energy_hash',
-  'ppa_contract_hash',
-  'recipe_hash',
-  'customer_list_hash',
+  'unit_price_hash',
+  'energy_invoice_hash',
+  'recycler_name_hash',
   'emission_factor_table_hash',
 ] as const;
 
-export const PCF_UPSTREAM_CUSTOMS_SD_FIELDS = [
-  'specific_direct_embedded_emissions',
-  'production_route',
-  'carbon_price_paid_origin',
+export const PCF_UPSTREAM_BRAND_SD_FIELDS = ['pcf_total', 'pcf_period', 'pcf_method', 'quantity_kg'] as const;
+
+export const PCF_UPSTREAM_AUDIT_SD_FIELDS = ['pcf_direct', 'pcf_indirect', 'electricity_kwh_per_kg', 'pcf_factor_source'] as const;
+
+/** 永不進憑證明文的機密項目名稱(數值只以 *_hash commitment 存在)。 */
+export const PCF_UPSTREAM_CONFIDENTIAL_FIELDS = ['unit_price', 'energy_invoice', 'recycler_name'] as const;
+
+/** pcf_dyeing(DYE 染整工段 SD-JWT VC;spec v3.1 §4.3)——A/B 差異全部來自此憑證。 */
+export const PCF_DYEING_PUBLIC_FIELDS = [
+  'process',
+  'facility_country',
+  'zdhc_incheck_level',
+  'ccs_subcontractor_status',
+  'ccs_scope_ref',
+  'boiler_model_hash',
+  'fuel_contract_hash',
+  'chemical_inventory_hash',
+  'ppa_price_hash',
+  'emission_factor_table_hash',
 ] as const;
 
-export const PCF_UPSTREAM_CUSTOMER_SD_FIELDS = [
-  'specific_indirect_embedded_emissions',
-  'electricity_mix_ref',
-  'installation_unlocode',
-  'dqr',
-  'primary_data_share',
+export const PCF_DYEING_BRAND_SD_FIELDS = ['pcf_total', 'heat_source', 'renewable_share', 'pcf_period', 'pcf_method'] as const;
+
+export const PCF_DYEING_AUDIT_SD_FIELDS = [
+  'heat_mj_per_kg',
+  'electricity_kwh_per_kg',
+  'boiler_efficiency',
+  'pcf_direct',
+  'pcf_indirect',
+  'pcf_factor_source',
 ] as const;
 
-/** 永不進憑證的機密項目名稱(僅供前端說明文字使用;數值本身不存在於憑證任何層)。 */
-export const PCF_UPSTREAM_CONFIDENTIAL_FIELDS = ['machine_energy', 'ppa_contract', 'recipe', 'customer_list', 'capacity_utilization'] as const;
+export const PCF_DYEING_CONFIDENTIAL_FIELDS = ['boiler_model', 'fuel_contract', 'chemical_inventory', 'ppa_price'] as const;
 
-export type PcfUpstreamCaseId = 'A' | 'B';
+/**
+ * pcf_aggregate(FAB 布廠聚合 PCF VC,幕 2 產出/幕 3 查驗對象;spec v3.1 §4.4)。
+ * 三段聚合:紗(外部)× 損耗加成 + 自家織布用電 + 染整(外部);precursor_refs 留三張
+ * 外部憑證(tc_rcs、pcf_upstream、pcf_dyeing)的 id + sha256(sd_jwt),不含任何上游明細。
+ * 品牌層六欄 = M2 allowed_claims,排放數字恰一個(pcf_total);pcf_yarn/pcf_knitting/pcf_dyeing
+ * 為 NEVER_DISCLOSABLE(H2)。不放稅則碼(移除 hs6);tcProductStandardLabelGrade 由 tc_rcs + 有效
+ * ccs_scope_cert 推導,不再自填。
+ */
+export const PCF_AGGREGATE_PUBLIC_FIELDS = [
+  'product',
+  'origin',
+  'tcProductStandardLabelGrade',
+  'zdhc_incheck_level',
+  'ccs_scope_ref',
+  'precursor_refs',
+  'plant_total_output_hash',
+  'capacity_utilization_hash',
+  'other_customers_hash',
+  'brand_allocation_share_hash',
+  'monthly_utility_commitments_hash',
+] as const;
 
-/** pcf_aggregate 案件同一組 A/B(語意別名,讀起來對應幕 2 情境)。 */
-export type PcfAggregateCaseId = PcfUpstreamCaseId;
+/** = M2 六欄(品牌層;spec v3 §5.2)。 */
+export const PCF_AGGREGATE_BRAND_SD_FIELDS = [
+  'pcf_total',
+  'pcf_period',
+  'pcf_method',
+  'tcProductRawMaterialPercentage',
+  'verification',
+  'quantity_kg',
+] as const;
 
-/** pcf_upstream 完整 claims 形狀(簽發時之未過濾版本;三分法欄位皆在同一物件內,SD 與否由 disclosureFrame 決定)。 */
+export const PCF_AGGREGATE_AUDIT_SD_FIELDS = [
+  'pcf_yarn',
+  'pcf_knitting',
+  'pcf_dyeing',
+  'yarn_loss_factor',
+  'knitting_electricity_kwh_per_kg',
+  'pcf_factor_source',
+] as const;
+
+export const PCF_AGGREGATE_CONFIDENTIAL_FIELDS = [
+  'plant_total_output',
+  'capacity_utilization',
+  'other_customers',
+  'brand_allocation_share',
+  'monthly_utility_commitments',
+  'utility_invoice_ref',
+] as const;
+
+export type HeatSource = 'natural_gas' | 'coal';
+
+export type PcfCaseId = 'A' | 'B';
+
+/** 舊名別名(v2 遺留呼叫端);新程式一律用 PcfCaseId。 */
+export type PcfUpstreamCaseId = PcfCaseId;
+export type PcfAggregateCaseId = PcfCaseId;
+
+/** 外部憑證參照指紋(id + sha256(sd_jwt),不含上游任何明細欄位)。 */
+export interface PrecursorRef {
+  id: string;
+  hash: string;
+}
+
+/** tc_rcs 完整 claims 形狀(簽發時之未過濾版本;SD 與否由 disclosureFrame 決定;spec v3.1 §4.2a)。 */
+export interface TcRcsPayload {
+  vct: string;
+  iss: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+  status: CredentialStatus;
+  tcNo: string;
+  tcStandard: string;
+  tcProductStandardLabelGrade: string;
+  tcProductCategoryCode: string;
+  tcProductDetailCode: string;
+  tcCertifiedRawMaterialCountryOrArea: string;
+  sellerTeId: string;
+  buyerTeId: string;
+  seller_lei: string;
+  buyer_lei: string;
+  volume_reconciled: boolean;
+  tcShipmentInvoiceReferences_hash: string;
+  tcProductRawMaterialCode: string;
+  tcProductRawMaterialPercentage: number;
+  tcProductCertifiedWeight: number;
+  tcShipmentDate: string;
+  tcShipmentNo: string;
+  inputTcNo: string;
+  tcProductLastProcessorName: string;
+  tcProductLastProcessorCountry: string;
+}
+
+/** ccs_scope_cert 完整 claims 形狀(全部公開層,無 SD;spec v3.1 §4.5)。 */
+export interface CcsScopeCertPayload {
+  vct: string;
+  iss: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+  status: CredentialStatus;
+  sc_no: string;
+  holder_lei: string;
+  holder_name: string;
+  standards: string[];
+  processes: Array<{ code: string; name: string; site: string }>;
+  associated_subcontractors: AssociatedSubcontractor[];
+  cb_lei: string;
+  cb_name: string;
+  valid_from: string;
+  valid_until: string;
+}
+
+/** pcf_upstream 完整 claims 形狀(簽發時之未過濾版本;SD 與否由 disclosureFrame 決定;spec v3.1 §4.2b)。 */
 export interface PcfUpstreamPayload {
   vct: string;
   iss: string;
@@ -134,59 +335,55 @@ export interface PcfUpstreamPayload {
   nbf: number;
   exp: number;
   status: CredentialStatus;
-  cn_code: string;
-  quantity_t: number;
+  tc_ref: TcRef;
+  product_code: string;
   country_of_origin: string;
-  machine_energy_hash: string;
-  ppa_contract_hash: string;
-  recipe_hash: string;
-  customer_list_hash: string;
+  unit_price_hash: string;
+  energy_invoice_hash: string;
+  recycler_name_hash: string;
   emission_factor_table_hash: string;
-  specific_direct_embedded_emissions: number;
-  production_route: 'EAF' | 'BF-BOF';
-  carbon_price_paid_origin: string;
-  specific_indirect_embedded_emissions: number;
-  electricity_mix_ref: string;
-  installation_unlocode: string;
-  dqr: number;
-  primary_data_share: number;
+  pcf_total: number;
+  pcf_period: string;
+  pcf_method: string;
+  quantity_kg: number;
+  pcf_direct: number;
+  pcf_indirect: number;
+  electricity_kwh_per_kg: number;
+  pcf_factor_source: string;
 }
 
-/**
- * pcf_aggregate(鴻鋼扣件 PCF VC,幕 2)欄位設計——出處:demo情境設定與合成資料規格-v2.md §4.3
- * (98-102 行)、2026-08-26-專案架構決策.md §4(POST /api/aggregate)。
- * 聚合值 = 前驅物內含排放(上游 direct+indirect 客戶層揭露值) × 投入係數 + 自身 direct + 自身 indirect
- * (規格v2:100,如 1.05×1.05+0.08+0.33≈1.51)。本憑證即 Tier-N 最小揭露之終點:
- * 不含上游任何明細欄位(specific_direct_embedded_emissions/production_route/
- * specific_indirect_embedded_emissions 等一律不出現),只留 precursor_ref 這個參照指紋。
- *
- * 公開層(非 SD 明文):cn_code(下游 CN code)、簽發者(iss)/簽發日(iat)/status.status_list、
- *   precursor_ref(上游憑證 id + sha256 hash)。
- * 買方合約層(SD 可撕,合約用途,非法定):carbon_total_tco2e_per_t(聚合總值,對應買方合約
- *   ≤2.00 tCO2e/t 的 direct+indirect 門檻;規格v2:20、74——CBAM 正式期鋼鐵類申報僅計 direct,
- *   本欄位含 indirect,不對應 CBAM 申報,不得標示為海關層)。
- * 客戶層(SD 可撕,合約用途,供幕 3 M2 mandate 之下游查驗;疊層熱點圖三段真值來源):
- *   precursor_contribution_tco2e_per_t、self_direct_tco2e_per_t、self_indirect_tco2e_per_t、
- *   carbon_price_paid_origin(台灣碳費;規格v2:101)。
- */
-export const PCF_AGGREGATE_PUBLIC_FIELDS = ['cn_code', 'precursor_ref'] as const;
-
-export const PCF_AGGREGATE_CUSTOMS_SD_FIELDS = ['carbon_total_tco2e_per_t'] as const;
-
-export const PCF_AGGREGATE_CUSTOMER_SD_FIELDS = [
-  'precursor_contribution_tco2e_per_t',
-  'self_direct_tco2e_per_t',
-  'self_indirect_tco2e_per_t',
-  'carbon_price_paid_origin',
-] as const;
-
-/** 上游憑證參照指紋(藍圖:150:「precursor_ref = 上游 VC 的 id + hash,不含上游任何明細欄位」)。 */
-export interface PrecursorRef {
-  id: string;
-  hash: string;
+/** pcf_dyeing 完整 claims 形狀(簽發時之未過濾版本;spec v3.1 §4.3)。 */
+export interface PcfDyeingPayload {
+  vct: string;
+  iss: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+  status: CredentialStatus;
+  process: string;
+  facility_country: string;
+  zdhc_incheck_level: string;
+  ccs_subcontractor_status: string;
+  ccs_scope_ref: CcsScopeRef;
+  boiler_model_hash: string;
+  fuel_contract_hash: string;
+  chemical_inventory_hash: string;
+  ppa_price_hash: string;
+  emission_factor_table_hash: string;
+  pcf_total: number;
+  heat_source: HeatSource;
+  renewable_share: number;
+  pcf_period: string;
+  pcf_method: string;
+  heat_mj_per_kg: number;
+  electricity_kwh_per_kg: number;
+  boiler_efficiency: number;
+  pcf_direct: number;
+  pcf_indirect: number;
+  pcf_factor_source: string;
 }
 
-/** pcf_aggregate 完整 claims 形狀(簽發時之未過濾版本;SD 與否由 disclosureFrame 決定)。 */
+/** pcf_aggregate 完整 claims 形狀(簽發時之未過濾版本;SD 與否由 disclosureFrame 決定;spec v3.1 §4.4)。 */
 export interface PcfAggregatePayload {
   vct: string;
   iss: string;
@@ -194,11 +391,27 @@ export interface PcfAggregatePayload {
   nbf: number;
   exp: number;
   status: CredentialStatus;
-  cn_code: string;
-  precursor_ref: PrecursorRef;
-  carbon_total_tco2e_per_t: number;
-  precursor_contribution_tco2e_per_t: number;
-  self_direct_tco2e_per_t: number;
-  self_indirect_tco2e_per_t: number;
-  carbon_price_paid_origin: string;
+  product: string;
+  origin: string;
+  tcProductStandardLabelGrade: string;
+  zdhc_incheck_level: string;
+  ccs_scope_ref: CcsScopeRef;
+  precursor_refs: PrecursorRef[];
+  plant_total_output_hash: string;
+  capacity_utilization_hash: string;
+  other_customers_hash: string;
+  brand_allocation_share_hash: string;
+  monthly_utility_commitments_hash: string;
+  pcf_total: number;
+  pcf_period: string;
+  pcf_method: string;
+  tcProductRawMaterialPercentage: number;
+  verification: string;
+  quantity_kg: number;
+  pcf_yarn: number;
+  pcf_knitting: number;
+  pcf_dyeing: number;
+  yarn_loss_factor: number;
+  knitting_electricity_kwh_per_kg: number;
+  pcf_factor_source: string;
 }

@@ -1,0 +1,286 @@
+{
+  "credential": {
+    "said": "ED862H0Ymui9kDysXK9E2Iou-7p8DHGDUmttWCqSTgY1",
+    "type": "le",
+    "acdc": {
+      "v": "ACDC10JSON0005c8_",
+      "d": "ED862H0Ymui9kDysXK9E2Iou-7p8DHGDUmttWCqSTgY1",
+      "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+      "ri": "EI-iLO1WrNC_uLPwfzuBOvH7N_taKUD_3hcjmo6OUouL",
+      "s": "ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY",
+      "a": {
+        "d": "EEBg4yUNhwU2BxBItWkmgfQeT6hvxfZXbSmIRIj-oUGy",
+        "i": "EGSzZixEaoS4xE7qO5ywS9AtFuxyDpxbhgQ2niGVUZUb",
+        "dt": "2026-08-30T09:36:39.727166+00:00",
+        "LEI": "984500CHENGFANG00176"
+      },
+      "e": {
+        "d": "EFY4xiLmkhmhxEfM478FYEWHFNiBTUpvgweYmcbRQlTg",
+        "qvi": {
+          "n": "EJSpPl3PyicKvkB5WOybg8FW02rLMi_k3cBcaECJ_A5O",
+          "s": "EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"
+        }
+      },
+      "r": {
+        "d": "EGZ97EjPSINR-O-KHDN_uw4fdrTxeuRXrqT5ZHHQJujQ",
+        "usageDisclaimer": {
+          "l": "Usage of a valid, unexpired, and non-revoked vLEI Credential, as defined in the associated Ecosystem Governance Framework, does not assert that the Legal Entity is trustworthy, honest, reputable in its business dealings, safe to do business with, or compliant with any laws or that an implied or expressly intended purpose will be fulfilled."
+        },
+        "issuanceDisclaimer": {
+          "l": "All information in a valid, unexpired, and non-revoked vLEI Credential, as defined in the associated Ecosystem Governance Framework, is accurate as of the date the validation process was complete. The vLEI Credential has been issued to the legal entity or person named in the vLEI Credential as the subject; and the qualified vLEI Issuer exercised reasonable care to perform the validation process set forth in the vLEI Ecosystem Governance Framework."
+        }
+      }
+    },
+    "sig": "0BDQkwDVq3EFzZxNK-ZEqgHCdTr0zANPaxvcZKQJCkEWwHivk0J8Kfq8qscHGggYMs6MLe8qnz59mkxpVqNjCSwL",
+    "issuer_key": "DH0rGxSov_VSsv5s_mz17IWVQ8gXMT-xWD4gEtd5P0hE"
+  },
+  "chain": [
+    {
+      "said": "EJSpPl3PyicKvkB5WOybg8FW02rLMi_k3cBcaECJ_A5O",
+      "type": "qvi",
+      "acdc": {
+        "v": "ACDC10JSON000521_",
+        "d": "EJSpPl3PyicKvkB5WOybg8FW02rLMi_k3cBcaECJ_A5O",
+        "i": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ",
+        "ri": "EKUylAdKYMiEBdiRuKT8kJ-luP8oQbnXbOcX6jP48qN0",
+        "s": "EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao",
+        "a": {
+          "d": "EBSacFEBz1Q-PDD9OYMYU9DzoYHTgad4ZqT6KzRJoVqj",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "dt": "2026-08-30T09:36:39.621353+00:00",
+          "LEI": "984500QVISANDBOX0040"
+        },
+        "r": {
+          "d": "EGZ97EjPSINR-O-KHDN_uw4fdrTxeuRXrqT5ZHHQJujQ",
+          "usageDisclaimer": {
+            "l": "Usage of a valid, unexpired, and non-revoked vLEI Credential, as defined in the associated Ecosystem Governance Framework, does not assert that the Legal Entity is trustworthy, honest, reputable in its business dealings, safe to do business with, or compliant with any laws or that an implied or expressly intended purpose will be fulfilled."
+          },
+          "issuanceDisclaimer": {
+            "l": "All information in a valid, unexpired, and non-revoked vLEI Credential, as defined in the associated Ecosystem Governance Framework, is accurate as of the date the validation process was complete. The vLEI Credential has been issued to the legal entity or person named in the vLEI Credential as the subject; and the qualified vLEI Issuer exercised reasonable care to perform the validation process set forth in the vLEI Ecosystem Governance Framework."
+          }
+        }
+      },
+      "sig": "0BCHHUNEo4i9MTc2cEHzTUU2lVG79Or7licX0j-yFFG_nrpMp6FRLxlCSgIrFiRm6ei0RUrR5dYGZPXPOPW-pXkO",
+      "issuer_key": "DAcQ6YVUOySvV6VEBcR2JgzfMs9Kq-4TFe4hLaS1aniu"
+    }
+  ],
+  "kels": {
+    "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY": [
+      {
+        "event": {
+          "v": "KERI10JSON00015f_",
+          "t": "dip",
+          "d": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "0",
+          "kt": "1",
+          "k": [
+            "DH0rGxSov_VSsv5s_mz17IWVQ8gXMT-xWD4gEtd5P0hE"
+          ],
+          "nt": "1",
+          "n": [
+            "EPXC0OE83cB-6kl7i76VAtN3f3GlGWN3Push4n0pUMlP"
+          ],
+          "bt": "0",
+          "b": [],
+          "c": [],
+          "a": [],
+          "di": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ"
+        },
+        "sig": "0BCzXpoOG1Zimp3a0_wJ0Ggy8T7-rDj3sxaTRgpinuTJuWTvsIc77I_FxmfhFglFxGxIfqewH0jO6lFbkymWXN4P"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "EOJHU1QgRZ7JQl8pHRaxbXonesfRXo-jfE9oszH9Z_dW",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "1",
+          "p": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "a": [
+            {
+              "i": "EI-iLO1WrNC_uLPwfzuBOvH7N_taKUD_3hcjmo6OUouL",
+              "s": "0",
+              "d": "EI-iLO1WrNC_uLPwfzuBOvH7N_taKUD_3hcjmo6OUouL"
+            }
+          ]
+        },
+        "sig": "0BAe4LFmfVfNUZ05qDuTyS9DQXOOhC9qyeJEy_ZbH7PYOrtzqBCA79rB3VLmewf0yBRGctcXlt-F8SyHy3ev2iAP"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "EGe0ktUPg3re71H3PZL3fP7-fm_S5SHPVXyg0JjyUOV1",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "2",
+          "p": "EOJHU1QgRZ7JQl8pHRaxbXonesfRXo-jfE9oszH9Z_dW",
+          "a": [
+            {
+              "i": "EBxAa5B6wp4IYci6xS1puTBR6XT2mlxsZ1RtiycBTJwp",
+              "s": "0",
+              "d": "EH-_ehQj6GDNLiX1Ah6ZuMPL1zZMEoD-MNcf-BAUiWil"
+            }
+          ]
+        },
+        "sig": "0BBjl1tHDwGpFa2jFw7UtMEncK-WuMCPaG7id_Lw2mCE_xNj8MmMffyZZXZbtLADFkLW4QzglbG999wOhGB5y-YF"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "EI_c_MIrr0g9X1HWcLvz-B7YbvcQI8rEqkdAQfRPG4yQ",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "3",
+          "p": "EGe0ktUPg3re71H3PZL3fP7-fm_S5SHPVXyg0JjyUOV1",
+          "a": [
+            {
+              "i": "ED862H0Ymui9kDysXK9E2Iou-7p8DHGDUmttWCqSTgY1",
+              "s": "0",
+              "d": "EGCMC2wD7F6Il8ns1Z5hJ4-4VyRe2DAAagPbA6ftXLVO"
+            }
+          ]
+        },
+        "sig": "0BCqTmVfFBx5vAOTsC8ZSatD10YjiRVxRIWPfb2qsrpkjgoYN4p_FntvrPdLc01SaA_GcK7uhZc1nAp453Qm5GsA"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "EKj3peQzZbJOA01P5R_7DALPEWKnMBQquNTqwsisU2LM",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "4",
+          "p": "EI_c_MIrr0g9X1HWcLvz-B7YbvcQI8rEqkdAQfRPG4yQ",
+          "a": [
+            {
+              "i": "EApuyKkvFKTMm4s1BULwykrpPCpltotXPnH0VD69Qm_J",
+              "s": "0",
+              "d": "EJaPQoGB2h8T3cuXQ54FvKFkTUpkN985KfRg78Z2nqGf"
+            }
+          ]
+        },
+        "sig": "0BAnUlNVed4p1J_nI9axAS5FbzBM8ihAsrL6W4s6l5Re6f364jE6EkYTHdQs_FmP8zkRiyZ5I7PWO-hMrn5_8sUG"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "ELstgYCM2PtCNFVSMVrXnopFTScSsqiYRMMQEMVgocbF",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "5",
+          "p": "EKj3peQzZbJOA01P5R_7DALPEWKnMBQquNTqwsisU2LM",
+          "a": [
+            {
+              "i": "EB8cXc3J2tZFooM_XeWSBKRbKnL550Z0rvLUv3190Dyi",
+              "s": "0",
+              "d": "EGB-nZCx2gtTOxBhEtyoUwd79Ghnsxgo-IWUEkANW8iC"
+            }
+          ]
+        },
+        "sig": "0BC8C2b-SeqWZDigBeRMSW-3PlCk2psdU3SyYKbLBbRavAQ5bMgYR0mRut_2TJqLRjp5X4Mj6hVQ9PSfXGqdod8M"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "EEhKkqnA3VAEUmlpmionNQYTxcSTPaUkyVKzNX-mOCe_",
+          "i": "EI-7d-ja8FlU1Vo73SPwCen4KWGRBfdfyczFK7RI-YBY",
+          "s": "6",
+          "p": "ELstgYCM2PtCNFVSMVrXnopFTScSsqiYRMMQEMVgocbF",
+          "a": [
+            {
+              "i": "ENQmw3DKFtS8SJj7wSaSwJkUTZpnyi23wjosLMtxdBDf",
+              "s": "0",
+              "d": "EHyc-QqwDkLjX2-hMHoe1LiqP2gXLcVYK43evHUFvqLI"
+            }
+          ]
+        },
+        "sig": "0BBVAoYBuj6HIMpIaDLZUa40eNlmn-h_XYkCi4BmOKVdxs3oRJIN2zoeXkRx9TGNkI1vQHbnT2CKbvU4040VcPEJ"
+      }
+    ],
+    "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ": [
+      {
+        "event": {
+          "v": "KERI10JSON00012b_",
+          "t": "icp",
+          "d": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ",
+          "i": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ",
+          "s": "0",
+          "kt": "1",
+          "k": [
+            "DAcQ6YVUOySvV6VEBcR2JgzfMs9Kq-4TFe4hLaS1aniu"
+          ],
+          "nt": "1",
+          "n": [
+            "EM-I1NNfSaLWbFXNjiuWsBbvhsWmFBsrtaKQrr_C-mes"
+          ],
+          "bt": "0",
+          "b": [],
+          "c": [],
+          "a": []
+        },
+        "sig": "0BBGJq9d_irTEKzPdRnVo8MNcuneI-VKlUjAMIBTiq699RuSRXpQ2zY94fvef6W6sfGOIvQ22_zLzMawe6nCs_8P"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "ECIz1SvI9QLyFs-p-vcqPDupNug2Q1VXicyV8Am7jqGV",
+          "i": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ",
+          "s": "1",
+          "p": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ",
+          "a": [
+            {
+              "i": "EKUylAdKYMiEBdiRuKT8kJ-luP8oQbnXbOcX6jP48qN0",
+              "s": "0",
+              "d": "EKUylAdKYMiEBdiRuKT8kJ-luP8oQbnXbOcX6jP48qN0"
+            }
+          ]
+        },
+        "sig": "0BAX0FE8VBLLLK04trxftwo5dnK68-IsPYwK_S32CcJpVDfUlUgTPQW24zEABnAY-YiIfblZ0w_pP5OFvG3z8ZcH"
+      },
+      {
+        "event": {
+          "v": "KERI10JSON00013a_",
+          "t": "ixn",
+          "d": "ECmsQ5QWiGC9Io1-4EUvmrcmoFIWjWrBeItuX3OzHxS7",
+          "i": "EC1JhJ5ixh9opOfTPyhVAO6rp5hePq8RqYVdcPbhTnqQ",
+          "s": "2",
+          "p": "ECIz1SvI9QLyFs-p-vcqPDupNug2Q1VXicyV8Am7jqGV",
+          "a": [
+            {
+              "i": "EJSpPl3PyicKvkB5WOybg8FW02rLMi_k3cBcaECJ_A5O",
+              "s": "0",
+              "d": "EA9cYq6vZ-gO1-OBskqlx2_VUCsGIppaRB69c8O33Ehm"
+            }
+          ]
+        },
+        "sig": "0BArGfA8duo5w2AL2h8_EM5WfxhDAFBzbELGA-7rzCCIKUUwIx6LRPz9G2-bgo2ERvRK3rEPegEy6mafNAK7iVwG"
+      }
+    ]
+  },
+  "tels": {
+    "ED862H0Ymui9kDysXK9E2Iou-7p8DHGDUmttWCqSTgY1": [
+      {
+        "v": "KERI10JSON0000ed_",
+        "t": "iss",
+        "d": "EGCMC2wD7F6Il8ns1Z5hJ4-4VyRe2DAAagPbA6ftXLVO",
+        "i": "ED862H0Ymui9kDysXK9E2Iou-7p8DHGDUmttWCqSTgY1",
+        "s": "0",
+        "ri": "EI-iLO1WrNC_uLPwfzuBOvH7N_taKUD_3hcjmo6OUouL",
+        "dt": "2026-08-30T09:36:39.727374+00:00"
+      }
+    ],
+    "EJSpPl3PyicKvkB5WOybg8FW02rLMi_k3cBcaECJ_A5O": [
+      {
+        "v": "KERI10JSON0000ed_",
+        "t": "iss",
+        "d": "EA9cYq6vZ-gO1-OBskqlx2_VUCsGIppaRB69c8O33Ehm",
+        "i": "EJSpPl3PyicKvkB5WOybg8FW02rLMi_k3cBcaECJ_A5O",
+        "s": "0",
+        "ri": "EKUylAdKYMiEBdiRuKT8kJ-luP8oQbnXbOcX6jP48qN0",
+        "dt": "2026-08-30T09:36:39.621563+00:00"
+      }
+    ]
+  }
+}
