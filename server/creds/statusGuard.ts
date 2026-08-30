@@ -26,6 +26,7 @@ import { JWT_STATUS_LIST_TYPE, StatusType, getListFromStatusListJWT } from '@owf
 import {
   readStatusListToken,
   buildAndWriteStatusList,
+  withStatusListLock,
   STATUS_LIST_SIZE,
   STATUS_TTL_SECONDS,
   STATUS_CLOCK_SKEW_SEC,
@@ -66,13 +67,20 @@ export async function safeReadOrRefreshStatusListToken(
   if (!isStale(verifiedPayload, nowSec)) return existing; // 新鮮:直接沿用,不必刷新
 
   // 陳舊,但「既有清單已成功解碼且驗章通過」——保留現有 bits、只換新 iat 續簽,不得重建為全 0。
-  let statuses: number[];
-  try {
-    const list = getListFromStatusListJWT(existing);
-    statuses = [];
-    for (let i = 0; i < STATUS_LIST_SIZE; i++) statuses.push(list.getStatus(i) === StatusType.Valid ? 0 : 1);
-  } catch {
-    return null; // fail-closed:bits 解碼失敗
-  }
-  return buildAndWriteStatusList(name, statuses);
+  // P1-3(Codex 審查):此續簽亦是 read-modify-write,與 server/statuslist.ts 之
+  // revokeStatusIndex()共用同一把跨行程鎖(withStatusListLock),避免這裡的續簽 write 與另一
+  // 行程的撤銷 write 交錯、悄悄覆蓋對方——取鎖後重讀一次現況(可能在等鎖期間已被撤銷或續簽
+  // 過),避免用等鎖前讀到的舊 statuses 覆蓋掉新變化。
+  return withStatusListLock(name, async () => {
+    const freshest = readStatusListToken(name) ?? existing;
+    let statuses: number[];
+    try {
+      const list = getListFromStatusListJWT(freshest);
+      statuses = [];
+      for (let i = 0; i < STATUS_LIST_SIZE; i++) statuses.push(list.getStatus(i) === StatusType.Valid ? 0 : 1);
+    } catch {
+      return null; // fail-closed:bits 解碼失敗
+    }
+    return buildAndWriteStatusList(name, statuses);
+  });
 }

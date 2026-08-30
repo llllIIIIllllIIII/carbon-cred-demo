@@ -39,11 +39,13 @@ import { verifyCompactSdJwt } from '../creds/verifier';
 import { verifyVleiChainSandbox } from '../creds/verifyPresentation';
 import { checkStatusBit, statusListUri } from '../statuslist';
 import { safeReadOrRefreshStatusListToken } from '../creds/statusGuard';
-import { getCredential, type CredentialRow } from '../creds/store';
+import { getCredential, getCredentialHistoryByHash, type CredentialRow } from '../creds/store';
 import { getMandate, insertMandateIfAbsent, type MandateRow } from '../creds/mandateStore';
 import { issueMandate, GATEWAY_AUD } from '../creds/mandate';
 import { issuePcfAggregate, PCF_AGGREGATE_VCT } from '../creds/pcfAggregate';
 import { PCF_DYEING_VCT } from '../creds/pcfDyeing';
+import { PCF_UPSTREAM_VCT } from '../creds/pcfUpstream';
+import { TC_RCS_VCT } from '../creds/tcRcs';
 import { ensureCcsScopeCert, verifyScopeCert, isSubcontractorListed } from '../creds/ccsScopeCert';
 import { ensureInvoice, verifyInvoice, type AgentCaseId } from '../creds/invoice';
 import { recordDecision } from '../audit';
@@ -487,6 +489,97 @@ function checkWalletRisk(
     return { ok: true, reasonCode: CODES.SINGLE_SOURCE_ONLY, detail: '僅一來源確認高風險,只記錄不升級', walletRisk, confirming, meta };
   }
   return { ok: true, walletRisk, confirming, meta };
+}
+
+export interface DossierCredentialHashes {
+  pcf_dyeing?: string;
+  pcf_aggregate?: string;
+}
+
+/**
+ * 幕 6 待辦(Phase 3a 定案指定,Phase 3b 補;phase-brief 3b §1.2)——**P1-1(Codex 審查)修法**:
+ * `/api/human-sign` 放行前、`/api/dossiers` 查詢時重驗 Dossier 依據之 pcf_dyeing/pcf_aggregate
+ * **現況**撤銷狀態,一律以 Dossier JWS payload.credential_hashes **凍結的 hash** 查回「建卡當下
+ * 那一版」sd_jwt(server/creds/store.ts 之 credential_history,append-only),重新驗章後讀其
+ * 自身 status.status_list.idx 查現況撤銷位——不得改看「當前 case_id 選出的現況 credentials
+ * 表 rows」。
+ *
+ * 前版實作以 caseId 查 credentials 表現況列,埋下這個洞:reissue 會把 credentials 表同 id 那
+ * 一列**覆蓋**成新內容(新 idx);攻擊者可撤 idx4 → reissue(換新 idx8/idx11,案件現況重新
+ * 變綠)→ 對「撤銷前」建立、仍 PENDING_HUMAN 的舊 Dossier 呼叫 human-sign,此時查到的是全新
+ * 未撤銷的 idx8/idx11 → 誤放行(該 Dossier 實際凍結之依據仍是已撤銷的 idx4/idx2);已 RELEASED
+ * 的舊 Dossier 於 GET /api/dossiers 之 effective_status 也會在 reissue 後「假性轉綠」。
+ * 改以凍結 hash 查歷史版本後,只要「那一版」自身之 status idx 已撤,無論案件現況是否已
+ * reissue 皆持續回報撤銷;新建立(hash 指向現況)的 Dossier 則不受影響,仍可正常放行。
+ */
+/**
+ * P1-5(Codex 審查第二輪):從 credential_history 以 hash 查回的 sd_jwt,先重算
+ * sha256(sd_jwt) 與請求的凍結 hash 完全一致才可信任。history 表以 hash 為 PRIMARY KEY,
+ * 但若該列 sd_jwt 欄位事後被直接改成「另一張同型別、同簽發者、目前未撤銷」的有效憑證
+ * (PK hash 未同步更新),verifyStoredCredential 只驗 sd_jwt 本身簽章/角色/效期/撤銷位,
+ * 從不回頭核對它是否真的是「這個 hash 所指的那一版」——會讓凍結到已撤版本的 Dossier
+ * 因 history 列被換版而通過重驗、誤放行。查無或 hash 不符一律 fail-closed。
+ */
+async function resolveFrozenCredential(
+  db: Database.Database,
+  hash: string,
+  expectedVct: string,
+  expectedRoleAid: string | undefined,
+  manifest: Manifest,
+  nowMs: number,
+  label: string,
+): Promise<{ ok: true; payload: Record<string, unknown> } | { ok: false; detail: string }> {
+  const hist = getCredentialHistoryByHash(db, hash);
+  if (!hist) return { ok: false, detail: `credential_history 查無 ${label} 凍結版本(hash=${hash.slice(0, 16)}…)` };
+  if (sha256Hex(hist.sd_jwt) !== hash) {
+    return { ok: false, detail: `credential_history 之 ${label} 列 sd_jwt 與其主鍵 hash 不符(疑似被置換,拒絕採信)` };
+  }
+  const result = await verifyStoredCredential(hist.sd_jwt, expectedVct, expectedRoleAid, manifest, nowMs);
+  if (!result.ok) return { ok: false, detail: result.detail };
+  return { ok: true, payload: result.payload };
+}
+
+/** precursor_refs 之 id 前綴 → 該型別憑證之 vct 與唯一被授權簽發角色(供 P1-1 逐筆重驗)。 */
+const PRECURSOR_VCT_ROLE: Array<{ prefix: string; vct: string; role: string }> = [
+  { prefix: 'tc_rcs', vct: TC_RCS_VCT, role: 'cb' },
+  { prefix: 'pcf_upstream', vct: PCF_UPSTREAM_VCT, role: 'yarn' },
+  { prefix: 'pcf_dyeing', vct: PCF_DYEING_VCT, role: 'dye' },
+];
+
+export async function checkDossierInputsCurrent(
+  db: Database.Database,
+  manifest: Manifest,
+  credentialHashes: DossierCredentialHashes | undefined,
+  nowMs: number,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  if (!credentialHashes?.pcf_dyeing || !credentialHashes?.pcf_aggregate) {
+    return { ok: false, detail: 'Dossier payload 缺 credential_hashes.pcf_dyeing/pcf_aggregate,無法重驗現況撤銷狀態(fail-closed)' };
+  }
+
+  const dye = await resolveFrozenCredential(db, credentialHashes.pcf_dyeing, PCF_DYEING_VCT, manifest.dye?.aid, manifest, nowMs, 'pcf_dyeing');
+  if (!dye.ok) return dye;
+
+  const agg = await resolveFrozenCredential(db, credentialHashes.pcf_aggregate, PCF_AGGREGATE_VCT, manifest.fab?.aid, manifest, nowMs, 'pcf_aggregate');
+  if (!agg.ok) return agg;
+
+  // P1-1(Codex 審查第二輪):aggregate 自身未撤銷不夠——它的碳排總量建立在 precursor_refs
+  // (tc_rcs、pcf_upstream、pcf_dyeing)之上。若撤的是這三張之一(直接 dyeing/aggregate slot
+  // 仍有效),舊 Dossier 依據之聚合值早已建立在「已撤銷之上游」上,不得因 dyeing/aggregate
+  // 自身 idx 未撤就放行——逐筆以其 hash 查 credential_history 現況版本重驗。
+  const precursorRefs = ((agg.payload as unknown as PcfAggregatePayload).precursor_refs ?? []) as PrecursorRef[];
+  for (const ref of precursorRefs) {
+    if (!ref?.hash || !ref.id) {
+      return { ok: false, detail: 'pcf_aggregate.precursor_refs 缺 id/hash,無法重驗現況撤銷狀態(fail-closed)' };
+    }
+    const match = PRECURSOR_VCT_ROLE.find((p) => ref.id === p.prefix || ref.id.startsWith(`${p.prefix}-`));
+    if (!match) {
+      return { ok: false, detail: `pcf_aggregate.precursor_refs 含未知型別之 id(${ref.id}),無法重驗現況撤銷狀態(fail-closed)` };
+    }
+    const precursorResult = await resolveFrozenCredential(db, ref.hash, match.vct, manifest[match.role]?.aid, manifest, nowMs, ref.id);
+    if (!precursorResult.ok) return precursorResult;
+  }
+
+  return { ok: true };
 }
 
 /**

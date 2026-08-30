@@ -17,11 +17,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import type Database from 'better-sqlite3';
 import { SignJWT, jwtVerify, decodeProtectedHeader } from 'jose';
 import { ROOT, openDb } from '../db';
 import { loadSandboxKey, loadWorkloadKey } from '../keys';
+import { readManifest } from '../manifest';
 import { recordDecision } from '../audit';
-import { AGENT_CHECK_IDS } from './agent';
+import { AGENT_CHECK_IDS, checkDossierInputsCurrent, type DossierCredentialHashes } from './agent';
 import { CODES, DOSSIER_STATUS } from '../../shared/codes';
 
 const ACTION = 'HumanSignRelease';
@@ -78,12 +80,14 @@ interface DossierJwsInvoiceFacts {
   payee_lei?: string;
 }
 
-interface DossierJwsPayload {
+export interface DossierJwsPayload {
   dossier_id?: string;
   case_id?: string;
   mandate_jti?: string;
   checks?: DossierJwsCheck[];
   invoice?: DossierJwsInvoiceFacts;
+  /** P1-1(Codex 審查):放行前重驗撤銷狀態一律以此凍結 hash 查歷史版本,不看現況 case rows。 */
+  credential_hashes?: DossierCredentialHashes;
   [k: string]: unknown;
 }
 
@@ -107,7 +111,7 @@ function isValidInvoiceFacts(invoice: DossierJwsInvoiceFacts | undefined): invoi
  * 物件,仍不假設 DB row 未被竄改(比照 server/routes/agent.ts verifyStoredCredential 之既有慣例)。
  * 回傳已驗證之 payload,供呼叫端另做「與 row 綁定」「五要件皆 ok:true」之縱深防禦重斷言(見下)。
  */
-async function verifyDossierJws(jws: string): Promise<{ ok: true; payload: DossierJwsPayload } | { ok: false }> {
+export async function verifyDossierJws(jws: string): Promise<{ ok: true; payload: DossierJwsPayload } | { ok: false }> {
   try {
     const key = loadWorkloadKey('fab-workload');
     const header = decodeProtectedHeader(jws);
@@ -146,6 +150,31 @@ function checksAllPassed(payload: DossierJwsPayload): boolean {
     if (c.ok !== true) return false;
   }
   return seenIds.size === AGENT_CHECK_IDS.length; // 無缺項
+}
+
+/**
+ * P1-1/P1-4(Codex 審查)共用:重驗失敗時「轉態 DEPENDS_REVOKED(終態)+ DENY 入鏈」——同一
+ * 段邏輯被呼叫兩次(見下方 P1-4 說明之早/晚兩個檢查點),抽成函式避免重複。UPDATE 帶
+ * `WHERE status = PENDING_HUMAN`:若此刻已被另一請求轉態(如已放行),本次 UPDATE 為 no-op,
+ * 但本次回應仍正確地拒絕放行(不會因為 no-op 而誤判成功)。
+ */
+function denyDependsRevoked(db: Database.Database, dossier: DossierRow, detail: string | undefined): void {
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE dossiers SET status = ? WHERE id = ? AND status = ?`).run(
+      DOSSIER_STATUS.DEPENDS_REVOKED,
+      dossier.id,
+      DOSSIER_STATUS.PENDING_HUMAN,
+    );
+    recordDecision(db, {
+      action: ACTION,
+      effect: 'DENY',
+      reason_code: CODES.DEPENDS_REVOKED,
+      case_id: dossier.case_id,
+      mandate_id: dossier.mandate_id,
+      context: { dossier_id: dossier.id, detail },
+    });
+  });
+  tx.immediate();
 }
 
 export function registerHumanSignRoutes(app: FastifyInstance): void {
@@ -227,6 +256,21 @@ export function registerHumanSignRoutes(app: FastifyInstance): void {
         });
       }
 
+      // 幕 6 待辦(Phase 3a 定案指定,Phase 3b 補;P1-1 修法):放行前重驗 Dossier 依據之
+      // pcf_dyeing/pcf_aggregate 現況撤銷狀態——一律以 Dossier 凍結之 credential_hashes 查
+      // 歷史版本(見 server/routes/agent.ts checkDossierInputsCurrent 之說明),不看現況
+      // case rows,故不受該案是否已 reissue 影響。任一不過 → 轉態 DEPENDS_REVOKED(終態,入鏈)。
+      const manifest = readManifest();
+      if (!manifest) return reply.code(404).send({ error: 'manifest 尚未產生(先跑 make setup)' });
+      const inputsCheck = await checkDossierInputsCurrent(db, manifest, dossierVerify.payload.credential_hashes, Date.now());
+      if (!inputsCheck.ok) {
+        denyDependsRevoked(db, dossier, inputsCheck.detail);
+        return reply.code(409).send({
+          error: `Dossier 依據之輸入憑證現況已撤銷,拒絕放行:${inputsCheck.detail}`,
+          reason_code: CODES.DEPENDS_REVOKED,
+        });
+      }
+
       // P1-A(Codex review 第二輪):電匯的 amount/currency/payer/payee 一律讀 Dossier
       // payload.invoice(agent.ts checkInvoiceOk 驗過的事實,受 fab-workload 簽章保護)——
       // 不再讀 seed 常數,使核准的發票與實際付款的金額/幣別/收付款方保證一致。
@@ -274,6 +318,22 @@ export function registerHumanSignRoutes(app: FastifyInstance): void {
         .setProtectedHeader({ alg: 'EdDSA', typ: RELEASE_TYP, kid: cfoKey.kid })
         .setIssuedAt(nowSec)
         .sign(cfoKey.privateKey);
+
+      // P1-4(Codex 審查,TOCTOU):上面的重驗通過後、release_jws 簽章(await)期間仍有一段
+      // 非同步窗口,若另一請求(API 或 make revoke CLI)恰在此刻完成撤銷,原本的檢查結果已
+      // 失效,但下面的 CAS 只查 status===PENDING_HUMAN 仍會放行已撤銷的依據。better-sqlite3
+      // 交易本體必須同步執行,無法把這段 async 密碼學驗證塞進下面的 CAS transaction 內達成
+      // 完全原子化;退而求其次,在簽章完成、進入同步 CAS 之前的最後一刻**再驗一次**,把可
+      // 被利用的窗口壓到最小(僅剩此行到下方 db.transaction() 開始之間的極短同步間隙,
+      // 期間無 await,不可能再被其他請求插入)。殘留風險見 phase report 說明。
+      const lateInputsCheck = await checkDossierInputsCurrent(db, manifest, dossierVerify.payload.credential_hashes, Date.now());
+      if (!lateInputsCheck.ok) {
+        denyDependsRevoked(db, dossier, lateInputsCheck.detail);
+        return reply.code(409).send({
+          error: `Dossier 依據之輸入憑證於放行前一刻被撤銷,取消放行:${lateInputsCheck.detail}`,
+          reason_code: CODES.DEPENDS_REVOKED,
+        });
+      }
 
       // P1-5(Codex review):狀態轉移原子化——兩個併發 /api/human-sign 可能都在上面讀到
       // PENDING_HUMAN、都通過驗證並各自簽出(有效的)release_jws;真正防雙重放行的是這裡的

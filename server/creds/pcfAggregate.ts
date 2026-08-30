@@ -39,14 +39,15 @@ import { ROOT } from '../db';
 import { loadSandboxKey, type SandboxRole } from '../keys';
 import { buildIssuerInstance } from './issuer';
 import { verifyCompactSdJwt } from './verifier';
-import { checkStatusBit, statusListUri } from '../statuslist';
+import { checkStatusBit, statusListUri, revokeStatusIndex } from '../statuslist';
 import { safeReadOrRefreshStatusListToken } from './statusGuard';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
-import { getCredential, insertCredentialIfAbsent } from './store';
+import { getCredential, insertCredentialIfAbsent, upsertCredential, type CredentialRow } from './store';
 import { issuePcfUpstream, round4 } from './pcfUpstream';
 import { issuePcfDyeing } from './pcfDyeing';
 import { ensureTcRcs } from './tcRcs';
 import { ensureCcsScopeCert, verifyScopeCert, isSubcontractorListed } from './ccsScopeCert';
+import { appendAudit } from '../audit';
 import { CODES, type ReasonCode } from '../../shared/codes';
 import {
   PCF_AGGREGATE_BRAND_SD_FIELDS,
@@ -284,8 +285,19 @@ async function verifyInput(sdJwt: string, label: string, expectedRole: SandboxRo
 /**
  * 簽出 pcf_aggregate(FAB sandbox LE AID 鑰)並原子落庫(insertCredentialIfAbsent:先到者落庫,
  * 後到者棄用自己剛簽的 token,一律以落庫勝者重建回傳值——breakdown 為純函式計算,不受競態影響)。
+ *
+ * opts.reissue(幕 6 撤銷後重簽;phase-brief 3b §0.3 規格疑義裁定 supersede 語意):改用備援
+ * idxKey `${id}-reissue`(data/seed.json 之 `pcf_aggregate-A-reissue: 11`)簽發新 aggregate,
+ * 並在落庫前先以 revokeStatusIndex() 翻銷「舊 slot」(id 本身原始 idx,如 A 案的 idx 2)——使
+ * 撤銷前留存的舊 presentation 對舊 aggregate 之查驗失敗(CREDENTIAL_REVOKED),新 aggregate 則
+ * 持新 idx 生效。id 本身不變(`pcf_aggregate-${caseId}`),以 upsertCredential 覆蓋落庫(非
+ * insertCredentialIfAbsent 之「已存在就不重簽」冪等語意)。
  */
-export async function issuePcfAggregate(db: Database.Database, caseId: PcfCaseId): Promise<PcfAggregateIssuance> {
+export async function issuePcfAggregate(
+  db: Database.Database,
+  caseId: PcfCaseId,
+  opts: { reissue?: boolean } = {},
+): Promise<PcfAggregateIssuance> {
   const seed = readSeed();
   const agg = seed.aggregate_defaults;
 
@@ -369,8 +381,10 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfCaseId
   // 6) 經 server/keys.ts 載入 FAB sandbox LE AID 鑰簽發。
   const key = loadSandboxKey('fab');
   const id = `pcf_aggregate-${caseId}`;
-  const statusIdx = seed.status_list_idx.credentials[id];
-  if (typeof statusIdx !== 'number') throw new Error(`seed.status_list_idx.credentials 缺 ${id}`);
+  const reissue = opts.reissue === true;
+  const idxKey = reissue ? `${id}-reissue` : id;
+  const statusIdx = seed.status_list_idx.credentials[idxKey];
+  if (typeof statusIdx !== 'number') throw new Error(`seed.status_list_idx.credentials 缺 ${idxKey}`);
   const statusUri = statusListUri('credentials');
 
   const issuedAtSec = Math.floor(new Date(`${agg.issued_at}T00:00:00Z`).getTime() / 1000);
@@ -418,13 +432,12 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfCaseId
   const instance = buildIssuerInstance(key);
   const sdJwt = await instance.issue(payload as unknown as SdJwtVcPayload, disclosureFrame, { header: { kid: key.kid } });
 
-  // 原子落庫:不論本次簽發是否贏得競態,一律回傳落庫勝者版本。
-  const { row } = insertCredentialIfAbsent(db, {
+  const credentialRecord = {
     id,
     type: 'pcf_aggregate',
     caseId,
-    issuerParty: 'fab',
-    holderParty: 'fab',
+    issuerParty: 'fab' as const,
+    holderParty: 'fab' as const,
     sdJwt,
     payload,
     statusIdx,
@@ -432,7 +445,26 @@ export async function issuePcfAggregate(db: Database.Database, caseId: PcfCaseId
     issuedAt: agg.issued_at,
     validFrom: agg.valid_from,
     validUntil: agg.valid_until,
-  });
+  };
+
+  let row: CredentialRow;
+  if (reissue) {
+    // supersede 語意:先翻銷舊 slot(id 本身原始 idx)——只有在上方所有驗證/核對皆已通過、
+    // 新 aggregate 也已成功簽出之後才動清單檔,驗證失敗的路徑不觸碰 Token Status List。
+    const oldIdx = seed.status_list_idx.credentials[id];
+    if (typeof oldIdx !== 'number') throw new Error(`seed.status_list_idx.credentials 缺 ${id}(舊 slot,reissue 無法翻銷)`);
+    await revokeStatusIndex('credentials', oldIdx);
+    // P1-5(Codex 審查):reissue 翻銷舊 slot 亦屬撤銷動作,須入鏈(不得只有 CLI/API 兩個
+    // 呼叫端留痕、supersede 路徑卻悄悄漏記)。
+    appendAudit(db, 'admin:revoke', { list: 'credentials', idx: oldIdx, actor: 'aggregate-reissue-supersede', id, case_id: caseId });
+    upsertCredential(db, credentialRecord);
+    const got = getCredential(db, id);
+    if (!got) throw new Error(`reissue 落庫後讀不回憑證(id=${id})——不應發生`);
+    row = got;
+  } else {
+    // 原子落庫:不論本次簽發是否贏得競態,一律回傳落庫勝者版本。
+    row = insertCredentialIfAbsent(db, credentialRecord).row;
+  }
   const finalPayload = JSON.parse(row.payload_json) as PcfAggregatePayload;
 
   return {

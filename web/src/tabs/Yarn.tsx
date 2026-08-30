@@ -63,7 +63,7 @@ export function Yarn({ manifest }: { manifest: Manifest | null }) {
     setTcBusy(true);
     setTcError(null);
     try {
-      const r = await fetch('/api/issue/tc', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const r = await fetch('/api/issue/tc', { method: 'POST' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? '載入 TC 失敗');
       setTcIssuance(data as IssueResponse);

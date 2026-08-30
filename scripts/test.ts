@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { SignJWT, jwtVerify, decodeProtectedHeader, decodeJwt as decodeJoseJwt } from 'jose';
 import { StatusList, createHeaderAndPayload, JWT_STATUS_LIST_TYPE } from '@owf/token-status-list';
 import { splitSdJwt, decodeJwt, type DisclosureFrame } from '@sd-jwt/core';
@@ -37,11 +37,23 @@ import { presentSelectedDisclosures, presentRawDisclosures, NeverDisclosableClai
 import { verifyPresentation, verifyVleiChainSandbox } from '../server/creds/verifyPresentation';
 import { processDiscloseRequest } from '../server/creds/discloseGateway';
 import { resolvePublicKeyFromManifest } from '../server/manifest';
-import { readStatusListToken, checkStatusBit, buildAndWriteStatusList, statusListFile, STATUS_TTL_SECONDS } from '../server/statuslist';
+import {
+  readStatusListToken,
+  checkStatusBit,
+  buildAndWriteStatusList,
+  statusListFile,
+  revokeStatusIndex,
+  withStatusListLock,
+  STATUS_DIR,
+  STATUS_TTL_SECONDS,
+} from '../server/statuslist';
+import { getCredentialHistoryByHash } from '../server/creds/store';
 import { M2_ALLOWED_CLAIMS, NEVER_DISCLOSABLE_CLAIMS, isSelectableDisclosure } from '../server/policy/claims';
 import { authorizeEmitReleaseCredential } from '../server/policy/cedar';
 import { PUBLIC_VLEI_STATE_FILE } from '../server/keys';
 import { CODES, DOSSIER_STATUS } from '../shared/codes';
+import { defaultIdxForLabels } from '../web/src/tabs/Audit';
+import { TAMPER_BACKUP_PATH } from './tamperBackup';
 import {
   PCF_UPSTREAM_PUBLIC_FIELDS,
   PCF_UPSTREAM_BRAND_SD_FIELDS,
@@ -79,6 +91,22 @@ async function signDiscloseRequest(
 
 function randomNonce(): string {
   return crypto.randomBytes(12).toString('base64url');
+}
+
+/**
+ * P1-3 回歸鎖用:非同步 spawn(與既有 spawnSync 不同,不阻塞事件迴圈)——用來讓兩個 CLI
+ * 行程「真正並發」啟動(Promise.all),藉此驗證 server/statuslist.ts 之 withStatusListLock
+ * 序列化確實序列化了跨行程的 read-modify-write,而非只是巧合地先後執行。
+ */
+function spawnAsync(cmd: string, args: string[], opts: SpawnOptionsWithoutStdio): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, opts);
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => (stdout += d.toString()));
+    child.stderr?.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.on('close', (code) => resolve({ status: code, stdout, stderr }));
+  });
 }
 
 /**
@@ -204,6 +232,13 @@ async function forgeInvoice(
  * dossierId/caseId/mandateJti 須與呼叫端插入 dossiers 表之 row 對齊(P1-6 綁定檢查所需,
  * 除非該測項故意測試「不對齊」);checkIds 控制 payload.checks 之 id 組成(P2-7 用以測試
  * 缺項/重複補數);allOk 控制每項 ok 值(預設 true)。
+ *
+ * P1-1(Codex 審查)修法後之相容處理:credential_hashes 預設**不再**是佔位假雜湊
+ * ('x'.repeat(64) 等)——server/routes/agent.ts 之 checkDossierInputsCurrent 現在會以此 hash
+ * 查 credential_history 表找回「那一版」sd_jwt 並重新驗章,假雜湊會查無歷史版本、回
+ * DEPENDS_REVOKED,使本應「checks 全過即可放行」的既有對照組(L1/P1-6)被誤傷。預設改為
+ * 查目前 DB 現況 pcf_dyeing-<caseId>/pcf_aggregate-<caseId> 之 sd_jwt 算出真實 hash;
+ * credentialHashesOverride 供刻意測試「查無歷史版本」等異常路徑時使用。
  */
 async function forgeDossierJws(args: {
   dossierId: string;
@@ -212,6 +247,7 @@ async function forgeDossierJws(args: {
   checkIds?: readonly string[];
   allOk?: boolean;
   invoice?: { amount?: number; currency?: string; payer_lei?: string; payee_lei?: string } | null;
+  credentialHashesOverride?: { pcf_dyeing?: string; pcf_aggregate?: string };
 }): Promise<string> {
   const key = loadWorkloadKey('fab-workload');
   const checkIds = args.checkIds ?? (['identity', 'subcontractor', 'carbon_threshold', 'invoice', 'wallet_risk'] as const);
@@ -229,6 +265,19 @@ async function forgeDossierJws(args: {
       payee_lei: args.invoice?.payee_lei ?? manifestForForge.dye.lei,
     };
   }
+
+  let credentialHashes = args.credentialHashesOverride;
+  if (!credentialHashes) {
+    const hashDb = openDb();
+    const dyeRow = hashDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get(`pcf_dyeing-${args.caseId}`) as { sd_jwt: string } | undefined;
+    const aggRow = hashDb.prepare('SELECT sd_jwt FROM credentials WHERE id = ?').get(`pcf_aggregate-${args.caseId}`) as { sd_jwt: string } | undefined;
+    hashDb.close();
+    credentialHashes = {
+      pcf_dyeing: dyeRow ? crypto.createHash('sha256').update(dyeRow.sd_jwt).digest('hex') : 'x'.repeat(64),
+      pcf_aggregate: aggRow ? crypto.createHash('sha256').update(aggRow.sd_jwt).digest('hex') : 'y'.repeat(64),
+    };
+  }
+
   const payload = {
     dossier_id: args.dossierId,
     build_hash: 'test-forged-build-hash',
@@ -236,7 +285,7 @@ async function forgeDossierJws(args: {
     case_id: args.caseId,
     mandate_jti: args.mandateJti,
     checks: checkIds.map((id) => ({ id, ok: allOk })),
-    credential_hashes: { pcf_dyeing: 'x'.repeat(64), pcf_aggregate: 'y'.repeat(64), invoice: 'z'.repeat(64) },
+    credential_hashes: { pcf_dyeing: credentialHashes.pcf_dyeing, pcf_aggregate: credentialHashes.pcf_aggregate, invoice: 'z'.repeat(64) },
     invoice,
   };
   return new SignJWT(payload)
@@ -3866,6 +3915,731 @@ async function main() {
       }
     } finally {
       await app46.close();
+    }
+  }
+
+  // 47) Phase 3b 幕 6(稽核與撤銷):make revoke/tamper/untamper 三個新 CLI + reissue supersede
+  //     語意(pcf_dyeing idx8、pcf_aggregate idx11)+ human-sign 放行前重驗現況撤銷狀態。
+  //     scoped reset:先將 credentials/mandates Token Status List 歸零、清掉 pcf_dyeing-A/
+  //     pcf_aggregate-A 與案 A 之既有 Dossier——Phase 3a 測項(38)已將 pcf_dyeing-A 留在
+  //     reissue(idx8)狀態,本段需要從 pristine idx(dyeing=4、aggregate=2)出發才能對齊
+  //     brief 描述之具體 idx 值,不受之前測項殘留影響。
+  {
+    const app47 = buildServer();
+    try {
+      await buildAndWriteStatusList('credentials');
+      await buildAndWriteStatusList('mandates');
+      const resetDb47 = openDb();
+      resetDb47.prepare("DELETE FROM credentials WHERE id IN ('pcf_dyeing-A','pcf_aggregate-A')").run();
+      resetDb47.prepare("DELETE FROM dossiers WHERE case_id = 'A'").run();
+      resetDb47.close();
+
+      const manifest47 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'vlei', 'manifest.json'), 'utf-8')) as Manifest;
+      const fabPubKey47 = resolvePublicKeyFromManifest(manifest47)(manifest47.fab.aid)!;
+      const seedForPeriod47 = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf-8')) as {
+        dyeing_defaults: { pcf_period: string };
+      };
+
+      // ---------- 前置:pristine 簽發 pcf_dyeing-A(idx4)+ pcf_aggregate-A(idx2)----------
+      const dyePre = await app47.inject({ method: 'POST', url: '/api/issue/dyeing?case=A' });
+      check('Phase 3b 前置:pristine pcf_dyeing-A 簽發成功', dyePre.statusCode === 200, `status=${dyePre.statusCode} body=${dyePre.body.slice(0, 200)}`);
+      const dyePreBody = dyePre.json() as { claims?: { status?: { status_list?: { idx: number } }; pcf_period?: string } };
+      check(
+        'Phase 3b 前置:pcf_dyeing-A 現況 idx==4(pristine slot)',
+        dyePreBody.claims?.status?.status_list?.idx === 4,
+        JSON.stringify(dyePreBody.claims?.status),
+      );
+      check(
+        'Phase 3b 前置:pcf_dyeing-A pcf_period 為 seed 原值(尚未 reissue)',
+        dyePreBody.claims?.pcf_period === seedForPeriod47.dyeing_defaults.pcf_period,
+        JSON.stringify(dyePreBody.claims?.pcf_period),
+      );
+
+      const aggPre = await app47.inject({ method: 'POST', url: '/api/aggregate', payload: { case_id: 'A' } });
+      check('Phase 3b 前置:pristine pcf_aggregate-A 聚合成功', aggPre.statusCode === 200, `status=${aggPre.statusCode} body=${aggPre.body.slice(0, 200)}`);
+      const aggPreBody = aggPre.json() as { status?: { idx: number } };
+      check('Phase 3b 前置:pcf_aggregate-A 現況 idx==2(pristine slot)', aggPreBody.status?.idx === 2, JSON.stringify(aggPreBody.status));
+
+      // D1:agent/run → PERMIT → human-sign → RELEASED(供後面查詢「既有 RELEASED Dossier 標 DEPENDS_REVOKED」)。
+      const run1_47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b 前置:agent/run(A,pristine)建 D1 → 200 PERMIT', run1_47.statusCode === 200, `status=${run1_47.statusCode} body=${run1_47.body.slice(0, 200)}`);
+      const dossierD1 = (run1_47.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b 前置:取得 Dossier D1 id', !!dossierD1);
+      const signD1 = dossierD1 ? await app47.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierD1 } }) : null;
+      check('Phase 3b 前置:human-sign(D1)回 200 RELEASED', !!signD1 && signD1.statusCode === 200, signD1?.body.slice(0, 200));
+
+      // D2:agent/run → PERMIT,保持 PENDING_HUMAN(供「幕 6 待辦」human-sign 重驗撤銷測項)。
+      const run2_47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b 前置:agent/run(A,pristine)建 D2 → 200 PERMIT', run2_47.statusCode === 200, `status=${run2_47.statusCode}`);
+      const dossierD2 = (run2_47.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b 前置:取得 Dossier D2 id(暫不放行)', !!dossierD2);
+
+      // D3:agent/run → PERMIT,保持 PENDING_HUMAN 直到「案件已 reissue+重聚合」之後才嘗試
+      // human-sign(P1-1 回歸鎖:凍結依據 hash 對得上「建卡當下」的 idx4/idx2,即使案件現況
+      // 已 reissue 到全新的 idx8/idx11,D3 仍必須被拒絕,不得因案件現況已重新變綠而誤放行)。
+      const run3_47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b 前置:agent/run(A,pristine)建 D3 → 200 PERMIT', run3_47.statusCode === 200, `status=${run3_47.statusCode}`);
+      const dossierD3 = (run3_47.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b 前置:取得 Dossier D3 id(暫不放行,留待 reissue 後測試)', !!dossierD3);
+
+      // ---------- 回歸 1:make revoke(scripts/revoke.ts)撤 credentials idx=4 ----------
+      const revokeRes47 = spawnSync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '4'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b DoD1:make revoke LIST=credentials IDX=4(scripts/revoke.ts)成功', revokeRes47.status === 0, revokeRes47.stdout + revokeRes47.stderr);
+
+      // F6 既有檢查保留(brief §3.6):重簽後仍是 compact JWS、header.typ=statuslist+jwt、FAB 公鑰驗章通過。
+      const credTokenAfterRevoke = readStatusListToken('credentials')!;
+      const credHeaderAfterRevoke = decodeProtectedHeader(credTokenAfterRevoke);
+      check('Phase 3b 回歸6:撤銷重簽後 credentials.jwt 仍 header.typ=statuslist+jwt', credHeaderAfterRevoke.typ === JWT_STATUS_LIST_TYPE, JSON.stringify(credHeaderAfterRevoke));
+      const credSigOkAfterRevoke = await jwtVerify(credTokenAfterRevoke, fabPubKey47).then(() => true).catch(() => false);
+      check('Phase 3b 回歸6:撤銷重簽後 credentials.jwt 以 FAB 公鑰驗章通過', credSigOkAfterRevoke === true);
+
+      const bitsRes47 = await app47.inject({ method: 'GET', url: '/api/status/credentials/bits' });
+      const bitsBody47 = bitsRes47.json() as { bits: number[]; labels: string[] };
+      check(
+        'Phase 3b UI 契約:GET /api/status/credentials/bits idx4 已撤銷且標籤為 pcf_dyeing-A',
+        bitsRes47.statusCode === 200 && bitsBody47.bits[4] === 1 && bitsBody47.labels[4] === 'pcf_dyeing-A',
+        JSON.stringify({ bit: bitsBody47.bits?.[4], label: bitsBody47.labels?.[4] }),
+      );
+
+      const auditCountBeforeRevokedRun = (openDb().prepare('SELECT COUNT(*) c FROM audit_chain').get() as { c: number }).c;
+      const revokedRun47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3b 回歸1:撤 credentials idx=4 後 agent/run(A)→ 403 CREDENTIAL_REVOKED',
+        revokedRun47.statusCode === 403 && (revokedRun47.json() as { reason_code?: string }).reason_code === CODES.CREDENTIAL_REVOKED,
+        `status=${revokedRun47.statusCode} body=${revokedRun47.body.slice(0, 200)}`,
+      );
+      const auditCountAfterRevokedRun = (openDb().prepare('SELECT COUNT(*) c FROM audit_chain').get() as { c: number }).c;
+      check(
+        'Phase 3b 回歸1:CREDENTIAL_REVOKED 入鏈(audit_chain 直接以 SQL 計數,不受 GET /api/audit?after=0 之 LIMIT 200 影響)',
+        auditCountAfterRevokedRun === auditCountBeforeRevokedRun + 1,
+        `before=${auditCountBeforeRevokedRun} after=${auditCountAfterRevokedRun}`,
+      );
+
+      const dossierListRes47 = await app47.inject({ method: 'GET', url: '/api/dossiers' });
+      const dossierList47 = dossierListRes47.json() as Array<{ id: string; status: string; effective_status: string }>;
+      const d1Entry47 = dossierList47.find((d) => d.id === dossierD1);
+      check(
+        'Phase 3b 回歸1:GET /api/dossiers 對既有 RELEASED 之 D1 標 effective_status=DEPENDS_REVOKED(status 欄位仍是 RELEASED,不竄改)',
+        !!d1Entry47 && d1Entry47.status === 'RELEASED' && d1Entry47.effective_status === CODES.DEPENDS_REVOKED,
+        JSON.stringify(d1Entry47),
+      );
+
+      // ---------- 幕 6 待辦(Phase 3a 定案指定,brief §1.2):PENDING_HUMAN 的 D2 於底層撤銷後 human-sign 應拒 ----------
+      const signD2Denied47 = dossierD2 ? await app47.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierD2 } }) : null;
+      check(
+        'Phase 3b 幕6待辦:PENDING_HUMAN 之 D2(依據已撤銷)呼叫 human-sign → 409 DEPENDS_REVOKED',
+        !!signD2Denied47 && signD2Denied47.statusCode === 409 && (signD2Denied47.json() as { reason_code?: string }).reason_code === CODES.DEPENDS_REVOKED,
+        signD2Denied47?.body.slice(0, 200),
+      );
+      const d2RowDb47 = openDb();
+      const d2Row47 = dossierD2 ? (d2RowDb47.prepare('SELECT status FROM dossiers WHERE id = ?').get(dossierD2) as { status: string } | undefined) : undefined;
+      d2RowDb47.close();
+      check('Phase 3b 幕6待辦:D2 於 DB 轉態為 DEPENDS_REVOKED(終態,無法再放行)', d2Row47?.status === CODES.DEPENDS_REVOKED, JSON.stringify(d2Row47));
+
+      // ---------- 回歸 2:reissue pcf_dyeing(idx8,新 pcf_period)+ reissue pcf_aggregate(翻 idx2、新簽 idx11)----------
+      const dyeReissueRes47 = await app47.inject({ method: 'POST', url: '/api/issue/dyeing?case=A&reissue=1' });
+      check('Phase 3b 回歸2:POST /api/issue/dyeing?case=A&reissue=1 回 200', dyeReissueRes47.statusCode === 200, `status=${dyeReissueRes47.statusCode}`);
+      const dyeReissueBody47 = dyeReissueRes47.json() as { claims?: { status?: { status_list?: { idx: number } }; pcf_period?: string } };
+      check('Phase 3b 回歸2:reissue 後 pcf_dyeing-A 現況 idx==8', dyeReissueBody47.claims?.status?.status_list?.idx === 8, JSON.stringify(dyeReissueBody47.claims?.status));
+      check(
+        'Phase 3b 回歸2:reissue 後 pcf_period 為下一個月(讀 seed 遞增,不寫死)',
+        dyeReissueBody47.claims?.pcf_period !== seedForPeriod47.dyeing_defaults.pcf_period && typeof dyeReissueBody47.claims?.pcf_period === 'string',
+        JSON.stringify(dyeReissueBody47.claims?.pcf_period),
+      );
+
+      const aggReissueRes47 = await app47.inject({ method: 'POST', url: '/api/aggregate?case=A&reissue=1' });
+      check(
+        'Phase 3b 回歸2:POST /api/aggregate?case=A&reissue=1 回 200(supersede)',
+        aggReissueRes47.statusCode === 200,
+        `status=${aggReissueRes47.statusCode} body=${aggReissueRes47.body.slice(0, 300)}`,
+      );
+      const aggReissueBody47 = aggReissueRes47.json() as { status?: { idx: number }; reissued?: boolean };
+      check('Phase 3b 回歸2:reissue 後 pcf_aggregate-A 現況 idx==11', aggReissueBody47.status?.idx === 11, JSON.stringify(aggReissueBody47.status));
+      check('Phase 3b 回歸2:回應標 reissued=true', aggReissueBody47.reissued === true, JSON.stringify(aggReissueBody47.reissued));
+
+      const credTokenAfterReagg47 = readStatusListToken('credentials')!;
+      const oldAggBit47 = await checkStatusBit(credTokenAfterReagg47, 2, fabPubKey47, statusListUri('credentials'));
+      check('Phase 3b 回歸2:supersede 語意——舊 pcf_aggregate-A slot(idx2)已被翻銷', oldAggBit47.ok && oldAggBit47.revoked, JSON.stringify(oldAggBit47));
+
+      const okRun47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b 回歸2:重簽+重聚合後 agent/run(A)恢復 200 PERMIT(五項全綠)', okRun47.statusCode === 200, `status=${okRun47.statusCode} body=${okRun47.body.slice(0, 200)}`);
+      const okChecks47 = (okRun47.json() as { checks?: Array<{ id: string; ok: boolean | null }> }).checks ?? [];
+      check('Phase 3b 回歸2:五要件皆 ok:true', okChecks47.length === 5 && okChecks47.every((c) => c.ok === true), JSON.stringify(okChecks47));
+
+      // ---------- P1-1(Codex 審查)回歸鎖:reissue 後,撤銷前留存之 D1/D3 仍必須顯示已撤銷 ----------
+      // 案件現況(current case rows)此刻已完全變綠(idx8/idx11,agent/run 200 PERMIT)——若查
+      // 撤銷狀態時錯看「現況」而非 Dossier 自身凍結的 credential_hashes,D1/D3 會被誤判為安全。
+      const dossierListAfterReissue47 = await app47.inject({ method: 'GET', url: '/api/dossiers' });
+      const dossierListAfterReissueBody47 = dossierListAfterReissue47.json() as Array<{ id: string; status: string; effective_status: string }>;
+      const d1EntryAfterReissue47 = dossierListAfterReissueBody47.find((d) => d.id === dossierD1);
+      check(
+        'Phase 3b P1-1:reissue+重聚合(案件現況已變綠)後,舊 RELEASED Dossier D1 之 effective_status 仍是 DEPENDS_REVOKED(不因案件現況變綠而假性轉綠)',
+        !!d1EntryAfterReissue47 && d1EntryAfterReissue47.status === 'RELEASED' && d1EntryAfterReissue47.effective_status === CODES.DEPENDS_REVOKED,
+        JSON.stringify(d1EntryAfterReissue47),
+      );
+
+      const signD3AfterReissue47 = dossierD3 ? await app47.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierD3 } }) : null;
+      check(
+        'Phase 3b P1-1:reissue+重聚合後,凍結依據仍指向已撤銷 idx4/idx2 的 D3 呼叫 human-sign → 仍 409 DEPENDS_REVOKED(不因案件現況已 reissue 變綠而誤放行)',
+        !!signD3AfterReissue47 && signD3AfterReissue47.statusCode === 409 && (signD3AfterReissue47.json() as { reason_code?: string }).reason_code === CODES.DEPENDS_REVOKED,
+        signD3AfterReissue47?.body.slice(0, 200),
+      );
+      const d3RowDb47 = openDb();
+      const d3Row47 = dossierD3 ? (d3RowDb47.prepare('SELECT status FROM dossiers WHERE id = ?').get(dossierD3) as { status: string } | undefined) : undefined;
+      d3RowDb47.close();
+      check('Phase 3b P1-1:D3 於 DB 轉態為 DEPENDS_REVOKED(終態)', d3Row47?.status === CODES.DEPENDS_REVOKED, JSON.stringify(d3Row47));
+
+      // 對照組(不得誤傷正常流程):reissue 之後**新建**的 Dossier D4——其凍結 hash 指向現況
+      // (未撤銷之 idx8/idx11)版本,human-sign 必須仍可正常放行。
+      const run4_47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b P1-1 對照組:reissue 後新建 D4 → 200 PERMIT', run4_47.statusCode === 200, `status=${run4_47.statusCode}`);
+      const dossierD4 = (run4_47.json() as { dossier?: { id: string } }).dossier?.id;
+      const signD4_47 = dossierD4 ? await app47.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierD4 } }) : null;
+      check(
+        'Phase 3b P1-1 對照組:reissue 後新建之 D4(凍結 hash 指向現況未撤銷版本)human-sign 正常放行 → 200 RELEASED(P1-1 修法未誤傷正常流程)',
+        !!signD4_47 && signD4_47.statusCode === 200,
+        signD4_47?.body.slice(0, 200),
+      );
+
+      // ---------- 回歸 2(verify-offline):新 presentation 通過、撤銷前留存之舊 presentation 失敗 ----------
+      // 舊樣本重用先前(幕 3 前置區塊)已捕捉之 permitPresentation/permitReceipt/m2MandateJwt——
+      // 其內 pcf_aggregate 快照之 status.status_list.idx==2(pristine slot),現已被本段翻銷。
+      const oldVerify47 = await verifyPresentation({ presentationSdJwt: permitPresentation, mandateJwt: m2MandateJwt, manifest: manifest47, receipt: permitReceipt });
+      const oldStatusCheck47 = oldVerify47.checks.find((c) => c.name.includes('撤銷狀態(Status List)'));
+      check(
+        'Phase 3b 回歸2:verify-offline 核心(verifyPresentation)對「撤銷前留存」之舊 presentation → 失敗 CREDENTIAL_REVOKED',
+        oldVerify47.ok === false && oldStatusCheck47?.ok === false && oldStatusCheck47?.reasonCode === CODES.CREDENTIAL_REVOKED,
+        JSON.stringify(oldStatusCheck47),
+      );
+
+      const newNonce47 = randomNonce();
+      const brandWorkload47 = loadWorkloadKey('brand-workload');
+      const newRequestJws47 = await signDiscloseRequest(brandWorkload47, m2Summary.jti, 'A', m2Summary.allowed_claims, newNonce47);
+      const newDiscloseRes47 = await app47.inject({ method: 'POST', url: '/api/disclose', payload: { request_jws: newRequestJws47 } });
+      check('Phase 3b 回歸2 前置:重聚合後對 M2 disclose(案 A)重新出示 → 200 PERMIT', newDiscloseRes47.statusCode === 200, `status=${newDiscloseRes47.statusCode} body=${newDiscloseRes47.body.slice(0, 200)}`);
+      const newDiscloseBody47 = newDiscloseRes47.json() as { presentation: string; receipt: string };
+      const newPresentation47 = newDiscloseBody47.presentation;
+      const newReceipt47 = newDiscloseBody47.receipt;
+
+      const newVerify47 = await verifyPresentation({ presentationSdJwt: newPresentation47, mandateJwt: m2MandateJwt, manifest: manifest47, receipt: newReceipt47 });
+      check('Phase 3b 回歸2:verify-offline 核心(verifyPresentation)對新 presentation(idx11)→ 全數通過', newVerify47.ok === true, JSON.stringify(newVerify47.checks.filter((c) => !c.ok)));
+
+      // 實際 spawn scripts/verify-offline.ts(不起 server、零網路呼叫)——brief 明列之 DoD 腳本本身。
+      const oldPresFile47 = path.join(ROOT, 'data', '.tmp-3b-old-presentation.txt');
+      const newPresFile47 = path.join(ROOT, 'data', '.tmp-3b-new-presentation.txt');
+      const mandateFile47 = path.join(ROOT, 'data', '.tmp-3b-mandate.txt');
+      const oldReceiptFile47 = path.join(ROOT, 'data', '.tmp-3b-old-receipt.txt');
+      const newReceiptFile47 = path.join(ROOT, 'data', '.tmp-3b-new-receipt.txt');
+      fs.writeFileSync(oldPresFile47, permitPresentation);
+      fs.writeFileSync(newPresFile47, newPresentation47);
+      fs.writeFileSync(mandateFile47, m2MandateJwt);
+      fs.writeFileSync(oldReceiptFile47, permitReceipt);
+      fs.writeFileSync(newReceiptFile47, newReceipt47);
+      try {
+        const oldCliRes47 = spawnSync(
+          TSX_BIN,
+          ['scripts/verify-offline.ts', '--presentation', path.relative(ROOT, oldPresFile47), '--mandate', path.relative(ROOT, mandateFile47), '--receipt', path.relative(ROOT, oldReceiptFile47)],
+          { cwd: ROOT, encoding: 'utf-8' },
+        );
+        check(
+          'Phase 3b DoD5:scripts/verify-offline.ts 對舊 presentation → 非零退出(CREDENTIAL_REVOKED)',
+          oldCliRes47.status !== 0 && oldCliRes47.stdout.includes(CODES.CREDENTIAL_REVOKED),
+          `status=${oldCliRes47.status} stdout=${oldCliRes47.stdout.slice(-300)}`,
+        );
+        const newCliRes47 = spawnSync(
+          TSX_BIN,
+          ['scripts/verify-offline.ts', '--presentation', path.relative(ROOT, newPresFile47), '--mandate', path.relative(ROOT, mandateFile47), '--receipt', path.relative(ROOT, newReceiptFile47)],
+          { cwd: ROOT, encoding: 'utf-8' },
+        );
+        check(
+          'Phase 3b DoD5:scripts/verify-offline.ts 對新 presentation → exit 0(全數通過)',
+          newCliRes47.status === 0 && newCliRes47.stdout.includes('全數通過'),
+          `status=${newCliRes47.status} stdout=${newCliRes47.stdout.slice(-300)}`,
+        );
+      } finally {
+        for (const f of [oldPresFile47, newPresFile47, mandateFile47, oldReceiptFile47, newReceiptFile47]) fs.rmSync(f, { force: true });
+      }
+
+      // ---------- P1-2(Codex 審查)回歸鎖:revoke 對缺損/未驗簽清單須 fail-closed ----------
+      // 使用 credentials idx6/idx7(seed 有標籤但本測試流程未在任何業務判斷用到——slcp_dcc/
+      // verification_attestation,與案 A 之 dyeing/aggregate/mandates 判斷完全無關),避免
+      // 干擾本區塊其餘仍在檢查中的 idx4/idx2/idx8/idx11。
+      {
+        const credFile47 = statusListFile('credentials');
+        const validCredBackup47 = fs.readFileSync(credFile47, 'utf-8');
+        fs.writeFileSync(credFile47, 'not-a-valid-jwt-garbage');
+        try {
+          let threw47 = false;
+          let threwMessage47 = '';
+          try {
+            await revokeStatusIndex('credentials', 6);
+          } catch (e) {
+            threw47 = true;
+            threwMessage47 = e instanceof Error ? e.message : String(e);
+          }
+          check('Phase 3b P1-2:損毀 credentials.jwt(非合法 JWT)後 revokeStatusIndex → 拒絕(fail-closed,拋錯)', threw47, threwMessage47);
+          check(
+            'Phase 3b P1-2:拒絕操作未寫檔——檔案內容仍是損毀時寫入的原字串,未被靜默改寫成「全新有效清單」',
+            fs.readFileSync(credFile47, 'utf-8') === 'not-a-valid-jwt-garbage',
+          );
+
+          const cliOnCorrupt47 = spawnSync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '7'], { cwd: ROOT, encoding: 'utf-8' });
+          check(
+            'Phase 3b P1-2:CLI(make revoke)對同一損毀清單同樣拒絕(exit 非 0,不寫檔)',
+            cliOnCorrupt47.status !== 0 && fs.readFileSync(credFile47, 'utf-8') === 'not-a-valid-jwt-garbage',
+            `status=${cliOnCorrupt47.status} stdout=${cliOnCorrupt47.stdout} stderr=${cliOnCorrupt47.stderr}`,
+          );
+        } finally {
+          fs.writeFileSync(credFile47, validCredBackup47);
+        }
+
+        // 還原損毀檔後,既有撤銷位元(idx4、idx2,分別於回歸1/回歸2 撤銷)必須原樣保留——
+        // 中途的失敗嘗試不得抹除或動搖既有撤銷狀態。
+        const credTokenAfterRestore47 = readStatusListToken('credentials')!;
+        const idx4StillRevoked47 = await checkStatusBit(credTokenAfterRestore47, 4, fabPubKey47, statusListUri('credentials'));
+        const idx2StillRevoked47 = await checkStatusBit(credTokenAfterRestore47, 2, fabPubKey47, statusListUri('credentials'));
+        check(
+          'Phase 3b P1-2:還原損毀檔後,既有撤銷位元(idx4)仍保留為已撤銷(fail-closed 期間未被抹除)',
+          idx4StillRevoked47.ok && idx4StillRevoked47.revoked,
+          JSON.stringify(idx4StillRevoked47),
+        );
+        check(
+          'Phase 3b P1-2:還原損毀檔後,既有撤銷位元(idx2)仍保留為已撤銷(fail-closed 期間未被抹除)',
+          idx2StillRevoked47.ok && idx2StillRevoked47.revoked,
+          JSON.stringify(idx2StillRevoked47),
+        );
+      }
+
+      // ---------- P1-3(Codex 審查)回歸鎖:兩個 revoke CLI 行程並發撤不同 idx,兩者皆不得遺失 ----------
+      {
+        const [raceA47, raceB47] = await Promise.all([
+          spawnAsync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '6'], { cwd: ROOT }),
+          spawnAsync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '7'], { cwd: ROOT }),
+        ]);
+        check(
+          'Phase 3b P1-3:兩個 revoke CLI 行程並發撤 credentials idx6/idx7 皆成功(exit 0)',
+          raceA47.status === 0 && raceB47.status === 0,
+          JSON.stringify({ a: { status: raceA47.status, out: raceA47.stdout }, b: { status: raceB47.status, out: raceB47.stdout } }),
+        );
+
+        const credTokenAfterRace47 = readStatusListToken('credentials')!;
+        const idx6AfterRace47 = await checkStatusBit(credTokenAfterRace47, 6, fabPubKey47, statusListUri('credentials'));
+        const idx7AfterRace47 = await checkStatusBit(credTokenAfterRace47, 7, fabPubKey47, statusListUri('credentials'));
+        check(
+          'Phase 3b P1-3:並發撤銷後 idx6 與 idx7 皆為已撤銷(read-modify-write 已序列化,無一被覆蓋遺失)',
+          idx6AfterRace47.ok && idx6AfterRace47.revoked && idx7AfterRace47.ok && idx7AfterRace47.revoked,
+          JSON.stringify({ idx6: idx6AfterRace47, idx7: idx7AfterRace47 }),
+        );
+
+        // 對照組:idx4/idx2(前面回歸 1/2 之撤銷)亦不受這次併發寫入影響。
+        const idx4AfterRace47 = await checkStatusBit(credTokenAfterRace47, 4, fabPubKey47, statusListUri('credentials'));
+        const idx2AfterRace47 = await checkStatusBit(credTokenAfterRace47, 2, fabPubKey47, statusListUri('credentials'));
+        check(
+          'Phase 3b P1-3 對照組:並發撤銷 idx6/idx7 未動搖既有 idx4/idx2 之撤銷狀態',
+          idx4AfterRace47.ok && idx4AfterRace47.revoked && idx2AfterRace47.ok && idx2AfterRace47.revoked,
+          JSON.stringify({ idx4: idx4AfterRace47, idx2: idx2AfterRace47 }),
+        );
+      }
+
+      // ---------- 回歸 3(輔線):make revoke LIST=mandates IDX=0(撤 M1)→ agent/run MANDATE_REVOKED ----------
+      const revokeM1Res47 = spawnSync(TSX_BIN, ['scripts/revoke.ts', '--list', 'mandates', '--idx', '0'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b DoD6:make revoke LIST=mandates IDX=0(撤 M1)成功', revokeM1Res47.status === 0, revokeM1Res47.stdout + revokeM1Res47.stderr);
+      const m1RevokedRun47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check(
+        'Phase 3b 回歸3:撤 M1(mandates idx=0)後 agent/run(A)→ 403 MANDATE_REVOKED',
+        m1RevokedRun47.statusCode === 403 && (m1RevokedRun47.json() as { reason_code?: string }).reason_code === CODES.MANDATE_REVOKED,
+        `status=${m1RevokedRun47.statusCode} body=${m1RevokedRun47.body.slice(0, 200)}`,
+      );
+      await buildAndWriteStatusList('mandates');
+      const m1RestoredRun47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b 回歸3 對照組:mandates 還原後 agent/run(A)恢復 200 PERMIT', m1RestoredRun47.statusCode === 200, `status=${m1RestoredRun47.statusCode}`);
+
+      // ---------- 回歸 4:make tamper N=<seq> → make verify-chain FAIL;make untamper → 全綠 ----------
+      const preTamperVerify47 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b 回歸4 前置:竄改前 make verify-chain 通過(exit 0)', preTamperVerify47.status === 0, preTamperVerify47.stdout.slice(-200));
+
+      const maxSeqDb47 = openDb();
+      const tamperN47 = (maxSeqDb47.prepare('SELECT MAX(seq) m FROM audit_chain').get() as { m: number }).m;
+      maxSeqDb47.close();
+      check('Phase 3b 回歸4 前置:audit_chain 有既存列可挑選竄改', tamperN47 > 0, `tamperN=${tamperN47}`);
+
+      const tamperRes47 = spawnSync(TSX_BIN, ['scripts/tamper.ts', '--n', String(tamperN47)], { cwd: ROOT, encoding: 'utf-8' });
+      check(`Phase 3b DoD7:make tamper N=${tamperN47} 成功(exit 0,先備份 db)`, tamperRes47.status === 0, tamperRes47.stdout + tamperRes47.stderr);
+
+      const postTamperVerify47 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+      check(
+        `Phase 3b DoD7:make verify-chain 自第 ${tamperN47} 筆起 FAIL(exit 非 0)`,
+        postTamperVerify47.status !== 0 && postTamperVerify47.stdout.includes(`✗ #${tamperN47} `),
+        postTamperVerify47.stdout.slice(-400),
+      );
+
+      const untamperRes47 = spawnSync(TSX_BIN, ['scripts/untamper.ts'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b DoD7:make untamper 成功還原(exit 0)', untamperRes47.status === 0, untamperRes47.stdout + untamperRes47.stderr);
+
+      const postUntamperVerify47 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b DoD7:untamper 後 make verify-chain 恢復全綠(exit 0)', postUntamperVerify47.status === 0, postUntamperVerify47.stdout.slice(-200));
+
+      // ---------- P2-7(Codex 審查)回歸鎖:tamper 備份保護——已存在之備份不得被覆寫;無效 seq 不動備份 ----------
+      {
+        const tamperBackupPath47 = TAMPER_BACKUP_PATH;
+        check('Phase 3b P2-7 前置:此刻無殘留備份檔', !fs.existsSync(tamperBackupPath47), tamperBackupPath47);
+
+        const seqDbA47 = openDb();
+        const tamperN2_47 = (seqDbA47.prepare('SELECT MAX(seq) m FROM audit_chain').get() as { m: number }).m;
+        seqDbA47.close();
+
+        const firstTamper47 = spawnSync(TSX_BIN, ['scripts/tamper.ts', '--n', String(tamperN2_47)], { cwd: ROOT, encoding: 'utf-8' });
+        check(`Phase 3b P2-7 前置:第一次 make tamper N=${tamperN2_47} 成功(建立備份)`, firstTamper47.status === 0, firstTamper47.stdout + firstTamper47.stderr);
+        check('Phase 3b P2-7 前置:備份檔已建立', fs.existsSync(tamperBackupPath47));
+
+        // 第二次 tamper(改竄改另一列)應被拒絕——備份已存在,不得覆寫第一次的原始快照。
+        const secondTamperN47 = tamperN2_47 > 1 ? tamperN2_47 - 1 : tamperN2_47;
+        const backupContentBeforeSecond47 = fs.readFileSync(tamperBackupPath47);
+        const secondTamper47 = spawnSync(TSX_BIN, ['scripts/tamper.ts', '--n', String(secondTamperN47)], { cwd: ROOT, encoding: 'utf-8' });
+        check(
+          'Phase 3b P2-7:備份已存在時,第二次 make tamper 拒絕執行(exit 非 0)',
+          secondTamper47.status !== 0,
+          `status=${secondTamper47.status} stdout=${secondTamper47.stdout} stderr=${secondTamper47.stderr}`,
+        );
+        check(
+          'Phase 3b P2-7:第二次(被拒絕之)tamper 未覆寫既有備份檔內容(仍是第一次 tamper 前的原始快照)',
+          Buffer.compare(fs.readFileSync(tamperBackupPath47), backupContentBeforeSecond47) === 0,
+        );
+
+        // untamper 應能還原到「第一次 tamper 之前」的原始狀態——第二次呼叫從未真的動過 db
+        // (被第一道「備份已存在」檢查擋下,連讀取目標列都沒有機會發生)。
+        const untamperAfterDouble47 = spawnSync(TSX_BIN, ['scripts/untamper.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check(
+          'Phase 3b P2-7:untamper 成功還原(第一次備份未被第二次呼叫覆寫,可正確還原到最初乾淨狀態)',
+          untamperAfterDouble47.status === 0,
+          untamperAfterDouble47.stdout + untamperAfterDouble47.stderr,
+        );
+        const verifyAfterDoubleUntamper47 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check(
+          'Phase 3b P2-7:還原後 make verify-chain 全綠(含第一次竄改之列與「本應被拒絕」的第二次目標列皆完好)',
+          verifyAfterDoubleUntamper47.status === 0,
+          verifyAfterDoubleUntamper47.stdout.slice(-300),
+        );
+
+        // 無效 seq(超出範圍,肯定找不到該列)→ 報錯,且不建立任何備份。
+        check('Phase 3b P2-7 前置:此刻備份檔已由 untamper 清除', !fs.existsSync(tamperBackupPath47));
+        const seqDbB47 = openDb();
+        const maxSeqNow47 = (seqDbB47.prepare('SELECT MAX(seq) m FROM audit_chain').get() as { m: number }).m;
+        seqDbB47.close();
+        const invalidN47 = maxSeqNow47 + 1_000_000;
+        const invalidTamper47 = spawnSync(TSX_BIN, ['scripts/tamper.ts', '--n', String(invalidN47)], { cwd: ROOT, encoding: 'utf-8' });
+        check(
+          `Phase 3b P2-7:無效 seq(N=${invalidN47},超出範圍)→ make tamper 報錯(exit 非 0)`,
+          invalidTamper47.status !== 0,
+          `status=${invalidTamper47.status} stdout=${invalidTamper47.stdout} stderr=${invalidTamper47.stderr}`,
+        );
+        check('Phase 3b P2-7:無效 seq 之嘗試未建立任何備份檔(db 未被觸碰)', !fs.existsSync(tamperBackupPath47));
+      }
+
+      // ---------- P1-4(Codex 審查)回歸鎖:TOCTOU——模擬「重驗通過後、CAS 前一刻」被撤銷 ----------
+      {
+        const run5_47 = await app47.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+        check('Phase 3b P1-4 前置:reissue 後新建 D5(凍結 hash 指向現況 idx8/idx11)→ 200 PERMIT', run5_47.statusCode === 200, `status=${run5_47.statusCode}`);
+        const dossierD5 = (run5_47.json() as { dossier?: { id: string } }).dossier?.id;
+        check('Phase 3b P1-4 前置:取得 Dossier D5 id', !!dossierD5);
+
+        // human-sign(D5)與撤銷其依據現況 idx(pcf_dyeing-A 現況 idx8)「同時」發起——human-sign
+        // 需歷經 JWS 驗證 + 兩輪 checkDossierInputsCurrent(各驗兩張憑證)+ release_jws 簽章等多次
+        // await,revoke 只需一次檔案鎖 + 簽章即可完成,實務上幾乎必定會在 human-sign 的第二輪
+        // (貼近 CAS 之)重驗完成前寫入撤銷——藉此驗證即使撤銷發生在檢查與放行之間的極短窗口,
+        // human-sign 最終仍不得放行已撤銷之依據(殘留風險見 phase report 說明)。
+        const [raceSignRes47] = await Promise.all([
+          dossierD5 ? app47.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierD5 } }) : Promise.resolve(null),
+          revokeStatusIndex('credentials', 8),
+        ]);
+        check(
+          'Phase 3b P1-4:human-sign 與撤銷其依據(idx8)並發時,最終不放行(非 200)',
+          !!raceSignRes47 && raceSignRes47.statusCode !== 200,
+          raceSignRes47 ? `status=${raceSignRes47.statusCode} body=${raceSignRes47.body.slice(0, 200)}` : 'no dossier',
+        );
+        check(
+          'Phase 3b P1-4:併發放行失敗之理由碼為 DEPENDS_REVOKED(非其他錯誤路徑意外擋下)',
+          !!raceSignRes47 && (raceSignRes47.json() as { reason_code?: string }).reason_code === CODES.DEPENDS_REVOKED,
+          raceSignRes47?.body.slice(0, 200),
+        );
+        const d5Db47 = openDb();
+        const d5Row47 = dossierD5 ? (d5Db47.prepare('SELECT status FROM dossiers WHERE id = ?').get(dossierD5) as { status: string } | undefined) : undefined;
+        d5Db47.close();
+        check('Phase 3b P1-4:D5 最終狀態非 RELEASED(未被誤放行)', d5Row47?.status !== 'RELEASED', JSON.stringify(d5Row47));
+      }
+
+      // ---------- 回歸 5:make demo-reset 一鍵還原(bits 歸零重簽、DB 重建、Dossier 清空、reissue 憑證移除)----------
+      const demoResetRes47 = spawnSync(TSX_BIN, ['scripts/seed.ts'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b DoD9:make demo-reset(scripts/seed.ts)執行成功(exit 0)', demoResetRes47.status === 0, demoResetRes47.stdout.slice(-300) + demoResetRes47.stderr.slice(-300));
+
+      const credTokenAfterReset47 = readStatusListToken('credentials')!;
+      const bitsAfterReset47: number[] = [];
+      for (let i = 0; i < STATUS_LIST_SIZE; i++) {
+        const b = await checkStatusBit(credTokenAfterReset47, i, fabPubKey47, statusListUri('credentials'));
+        bitsAfterReset47.push(b.revoked ? 1 : 0);
+      }
+      check('Phase 3b 回歸5:demo-reset 後 credentials Status List 全 0(bits 歸零重簽)', bitsAfterReset47.every((b) => b === 0), JSON.stringify(bitsAfterReset47));
+
+      const afterResetDb47 = openDb();
+      const dossierCountAfterReset47 = (afterResetDb47.prepare('SELECT COUNT(*) c FROM dossiers').get() as { c: number }).c;
+      const dyeRowAfterReset47 = afterResetDb47.prepare("SELECT id FROM credentials WHERE id = 'pcf_dyeing-A'").get() as { id: string } | undefined;
+      afterResetDb47.close();
+      check('Phase 3b 回歸5:demo-reset 後 Dossier 清空', dossierCountAfterReset47 === 0, `count=${dossierCountAfterReset47}`);
+      check(
+        'Phase 3b 回歸5:demo-reset 後 pcf_dyeing-A(含 reissue 版本)隨 DB 重建一併移除',
+        dyeRowAfterReset47 === undefined,
+        JSON.stringify(dyeRowAfterReset47),
+      );
+    } finally {
+      await app47.close();
+    }
+  }
+
+  // 48) P2-6(Codex 審查)回歸鎖:web/src/tabs/Audit.tsx 切換 credentials/mandates 清單時,
+  //     revokeIdx 須重置為新清單之合法預設(mandates→0),不得沿用另一份清單的舊選值——
+  //     碼層驗證(直接匯入純函式單元測試,無需瀏覽器/DOM)。
+  {
+    check(
+      'Phase 3b P2-6:defaultIdxForLabels 對 mandates 標籤(M1@0、M2@1)回傳 0',
+      defaultIdxForLabels(['M1', 'M2']) === 0,
+    );
+    check(
+      'Phase 3b P2-6:defaultIdxForLabels 對 credentials 標籤(pcf_dyeing-A@4 為第一個有標籤 idx)回傳 4',
+      defaultIdxForLabels(['', '', '', '', 'pcf_dyeing-A', '', 'slcp_dcc']) === 4,
+    );
+    check('Phase 3b P2-6:defaultIdxForLabels 對全空標籤陣列回傳 0(安全預設)', defaultIdxForLabels(['', '', '']) === 0);
+    check('Phase 3b P2-6:defaultIdxForLabels 對空陣列回傳 0(安全預設)', defaultIdxForLabels([]) === 0);
+  }
+
+  // 49) Phase 3b 幕 6 — Codex 審查第二輪(8 條):P1-1 precursor 撤銷未驗、P1-2 既有 DB
+  //     未 backfill history、P1-3 跨清單 token 互換、P1-4 audit append 未序列化、
+  //     P1-5 history 未重算 hash、P2-6 credential/history 寫入非原子、P2-7 鎖 stale 回收
+  //     誤刪他人鎖、P2-8 tamper 備份非獨占建立。承接第 47 block 結尾之 demo-reset,
+  //     從乾淨/空 DB 出發。
+  {
+    const app49 = buildServer();
+    try {
+      // ---------- P1-1:撤 aggregate 之 precursor(pcf_upstream idx0 / tc_rcs idx9)仍應被擋 ----------
+      const runP1 = await app49.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      check('Phase 3b P1-1(第二輪)前置:pristine agent/run(A)建 Dp1 → 200 PERMIT', runP1.statusCode === 200, `status=${runP1.statusCode} body=${runP1.body.slice(0, 200)}`);
+      const dossierP1 = (runP1.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b P1-1(第二輪)前置:取得 Dossier Dp1 id(暫不放行)', !!dossierP1);
+
+      const revokeUpstream49 = spawnSync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '0'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b P1-1(第二輪):make revoke LIST=credentials IDX=0(pcf_upstream-A)成功', revokeUpstream49.status === 0, revokeUpstream49.stdout + revokeUpstream49.stderr);
+
+      const dossierListP1 = (await app49.inject({ method: 'GET', url: '/api/dossiers' })).json() as Array<{ id: string; effective_status: string }>;
+      const dp1Entry = dossierListP1.find((d) => d.id === dossierP1);
+      check(
+        'Phase 3b P1-1(第二輪):撤 pcf_upstream-A(idx0,aggregate 之 precursor)後,GET /api/dossiers 對 Dp1 標 DEPENDS_REVOKED',
+        dp1Entry?.effective_status === CODES.DEPENDS_REVOKED,
+        JSON.stringify(dp1Entry),
+      );
+      const signDp1 = await app49.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierP1 } });
+      check(
+        'Phase 3b P1-1(第二輪):human-sign(Dp1)因 precursor(pcf_upstream-A)已撤 → 409 DEPENDS_REVOKED(即使 dyeing/aggregate 自身 idx 未撤)',
+        signDp1.statusCode === 409 && (signDp1.json() as { reason_code?: string }).reason_code === CODES.DEPENDS_REVOKED,
+        signDp1.body.slice(0, 200),
+      );
+
+      // 對照組(不得誤傷正常流程):還原 idx0 → 新建 Dp2 → human-sign 正常 200。
+      await buildAndWriteStatusList('credentials');
+      const runP2 = await app49.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      const dossierP2 = (runP2.json() as { dossier?: { id: string } }).dossier?.id;
+      const signDp2 = dossierP2 ? await app49.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierP2 } }) : null;
+      check(
+        'Phase 3b P1-1(第二輪)對照組:還原 idx0 後,新建 Dp2(未撤上游)human-sign 正常 200 RELEASED(未誤傷正常流程)',
+        !!signDp2 && signDp2.statusCode === 200,
+        signDp2?.body.slice(0, 200),
+      );
+
+      // 同理測 tc_rcs(idx9)——先建 Dp3(pristine),再撤 tc_rcs。
+      const runP3 = await app49.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      const dossierP3 = (runP3.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b P1-1(第二輪)前置:pristine agent/run(A)建 Dp3 → 200 PERMIT', runP3.statusCode === 200 && !!dossierP3, `status=${runP3.statusCode}`);
+
+      const revokeTcRcs49 = spawnSync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '9'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b P1-1(第二輪):make revoke LIST=credentials IDX=9(tc_rcs)成功', revokeTcRcs49.status === 0, revokeTcRcs49.stdout + revokeTcRcs49.stderr);
+
+      const dossierListP3 = (await app49.inject({ method: 'GET', url: '/api/dossiers' })).json() as Array<{ id: string; effective_status: string }>;
+      const dp3Entry = dossierListP3.find((d) => d.id === dossierP3);
+      check(
+        'Phase 3b P1-1(第二輪):撤 tc_rcs(idx9,aggregate 之 precursor)後,GET /api/dossiers 對 Dp3 標 DEPENDS_REVOKED',
+        dp3Entry?.effective_status === CODES.DEPENDS_REVOKED,
+        JSON.stringify(dp3Entry),
+      );
+      const signDp3 = dossierP3 ? await app49.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierP3 } }) : null;
+      check(
+        'Phase 3b P1-1(第二輪):human-sign(Dp3)因 precursor(tc_rcs)已撤 → 409 DEPENDS_REVOKED',
+        !!signDp3 && signDp3.statusCode === 409 && (signDp3.json() as { reason_code?: string }).reason_code === CODES.DEPENDS_REVOKED,
+        signDp3?.body.slice(0, 200),
+      );
+      await buildAndWriteStatusList('credentials'); // 還原,不殘留撤銷位元供後續測項誤用。
+
+      // ---------- P1-5:history 列 sd_jwt 被換版(PK hash 不符)→ human-sign 仍偵測並拒 ----------
+      const runP5 = await app49.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      const dossierP5 = (runP5.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b P1-5 前置:pristine agent/run(A)建 Dh → 200 PERMIT', runP5.statusCode === 200 && !!dossierP5, `status=${runP5.statusCode}`);
+
+      const dhRowDb = openDb();
+      const dhJws = (dhRowDb.prepare('SELECT jws FROM dossiers WHERE id = ?').get(dossierP5) as { jws: string }).jws;
+      const dhHash = (decodeJoseJwt(dhJws) as { credential_hashes?: { pcf_dyeing?: string } }).credential_hashes?.pcf_dyeing;
+      check('Phase 3b P1-5 前置:解出 Dh 凍結之 pcf_dyeing hash', typeof dhHash === 'string' && dhHash.length === 64, String(dhHash));
+      const otherSdJwtRow = dhRowDb.prepare("SELECT sd_jwt FROM credentials WHERE id = 'tc_rcs'").get() as { sd_jwt: string };
+      const originalHistorySdJwt = getCredentialHistoryByHash(dhRowDb, dhHash!)?.sd_jwt;
+      dhRowDb
+        .prepare('UPDATE credential_history SET sd_jwt = ? WHERE hash = ?')
+        .run(otherSdJwtRow.sd_jwt, dhHash);
+      dhRowDb.close();
+
+      const signDh = await app49.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierP5 } });
+      check(
+        'Phase 3b P1-5:credential_history 列 sd_jwt 被換成另一張有效憑證(PK hash 不變)→ human-sign 仍偵測 hash 不符而拒(409 DEPENDS_REVOKED)',
+        signDh.statusCode === 409 && (signDh.json() as { reason_code?: string }).reason_code === CODES.DEPENDS_REVOKED,
+        signDh.body.slice(0, 200),
+      );
+
+      const restoreHistDb = openDb();
+      restoreHistDb.prepare('UPDATE credential_history SET sd_jwt = ? WHERE hash = ?').run(originalHistorySdJwt, dhHash);
+      restoreHistDb.close();
+
+      // ---------- P2-6:credentials 現況列與 credential_history 同步存在(兩寫共用同一 transaction 之可觀察不變量) ----------
+      const p26Db = openDb();
+      const dyeRowP26 = p26Db.prepare("SELECT sd_jwt FROM credentials WHERE id = 'pcf_dyeing-A'").get() as { sd_jwt: string };
+      const hashP26 = crypto.createHash('sha256').update(dyeRowP26.sd_jwt).digest('hex');
+      const histP26 = getCredentialHistoryByHash(p26Db, hashP26);
+      check(
+        'Phase 3b P2-6:credentials 現況列與 credential_history 同步存在且內容一致(insertCredentialIfAbsent/upsertCredential 兩寫共用同一 immediate transaction)',
+        !!histP26 && histP26.sd_jwt === dyeRowP26.sd_jwt,
+        JSON.stringify({ found: !!histP26 }),
+      );
+      p26Db.close();
+
+      // ---------- P1-2:既有 DB(history 表被清空,模擬 pre-3b/未 backfill 之庫)開啟後自動補齊 ----------
+      const runBf = await app49.inject({ method: 'POST', url: '/api/agent/run?case=A', payload: { request_nonce: randomNonce() } });
+      const dossierBf = (runBf.json() as { dossier?: { id: string } }).dossier?.id;
+      check('Phase 3b P1-2 前置:pristine agent/run(A)建 Dbf → 200 PERMIT', runBf.statusCode === 200 && !!dossierBf, `status=${runBf.statusCode}`);
+
+      const wipeDb = openDb();
+      wipeDb.prepare('DELETE FROM credential_history').run();
+      const historyCountAfterWipe = (wipeDb.prepare('SELECT COUNT(*) c FROM credential_history').get() as { c: number }).c;
+      wipeDb.close();
+      check('Phase 3b P1-2 前置:credential_history 已清空(模擬既有 DB 升級前狀態)', historyCountAfterWipe === 0, `count=${historyCountAfterWipe}`);
+
+      const reopenDb = openDb(); // openDb() 應自動 backfill(P1-2 修法)。
+      const historyCountAfterReopen = (reopenDb.prepare('SELECT COUNT(*) c FROM credential_history').get() as { c: number }).c;
+      reopenDb.close();
+      check(
+        'Phase 3b P1-2:openDb() 重新開啟後 credential_history 自動 backfill(非零,不需破壞性 reset)',
+        historyCountAfterReopen > 0,
+        `count=${historyCountAfterReopen}`,
+      );
+
+      const signBf = dossierBf ? await app49.inject({ method: 'POST', url: '/api/human-sign', payload: { dossier_id: dossierBf } }) : null;
+      check(
+        'Phase 3b P1-2:history 清空後,human-sign 開庫時已自動 backfill,Dbf 仍正常 200 RELEASED(非誤判 DEPENDS_REVOKED)',
+        !!signBf && signBf.statusCode === 200,
+        signBf?.body.slice(0, 200),
+      );
+
+      // ---------- P1-3:跨清單 token 互換(把 mandates.jwt 內容當 credentials.jwt)→ revoke 應拒 ----------
+      {
+        const credFileP13 = statusListFile('credentials');
+        const mandatesFileP13 = statusListFile('mandates');
+        const originalCredContent = fs.readFileSync(credFileP13, 'utf-8');
+        const mandatesContent = fs.readFileSync(mandatesFileP13, 'utf-8');
+        fs.writeFileSync(credFileP13, mandatesContent);
+        try {
+          let threwP13 = false;
+          let threwMsgP13 = '';
+          try {
+            await revokeStatusIndex('credentials', 5);
+          } catch (e) {
+            threwP13 = true;
+            threwMsgP13 = e instanceof Error ? e.message : String(e);
+          }
+          check('Phase 3b P1-3:credentials.jwt 被置換成合法簽章之 mandates token → revokeStatusIndex 拒絕(sub 不符)', threwP13, threwMsgP13);
+          check(
+            'Phase 3b P1-3:拒絕操作未寫檔(檔案內容仍是置換進去的 mandates token,未被悄悄改寫/洗白)',
+            fs.readFileSync(credFileP13, 'utf-8') === mandatesContent,
+          );
+        } finally {
+          fs.writeFileSync(credFileP13, originalCredContent);
+        }
+      }
+
+      // ---------- P1-4:多寫入者併發 appendAudit(併發兩個 revoke CLI)後 verify-chain 仍完整(無分叉) ----------
+      {
+        const [raceC1, raceC2] = await Promise.all([
+          spawnAsync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '20'], { cwd: ROOT }),
+          spawnAsync(TSX_BIN, ['scripts/revoke.ts', '--list', 'credentials', '--idx', '21'], { cwd: ROOT }),
+        ]);
+        check(
+          'Phase 3b P1-4 前置:兩個 revoke CLI(各自呼叫 appendAudit)併發皆成功(exit 0)',
+          raceC1.status === 0 && raceC2.status === 0,
+          JSON.stringify({ a: raceC1.status, b: raceC2.status }),
+        );
+        const chainCheckP14 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check(
+          'Phase 3b P1-4:併發 appendAudit 寫入者(immediate transaction 序列化)後 verify-chain 仍完整(無分叉/斷鏈)',
+          chainCheckP14.status === 0,
+          chainCheckP14.stdout.slice(-300),
+        );
+        await buildAndWriteStatusList('credentials'); // 還原,不殘留 idx20/21 撤銷位元。
+      }
+
+      // ---------- P2-7:鎖遭 stale 回收機制接管後,原持有者 finally 不得誤刪新持有者的鎖 ----------
+      {
+        const lockPathP27 = path.join(STATUS_DIR, '.credentials.lock');
+        if (fs.existsSync(lockPathP27)) fs.rmSync(lockPathP27, { force: true });
+        await withStatusListLock('credentials', async () => {
+          // 模擬鎖檔於臨界區執行期間被另一行程的 stale 回收機制接管(內容換成別的 owner token)。
+          fs.writeFileSync(lockPathP27, 'simulated-other-owner-token');
+          return null;
+        });
+        const lockContentAfterP27 = fs.existsSync(lockPathP27) ? fs.readFileSync(lockPathP27, 'utf-8') : null;
+        check(
+          'Phase 3b P2-7(第二輪):鎖遭接管後,原持有者之 finally 不誤刪新持有者的鎖(內容仍是接管者的 owner token)',
+          lockContentAfterP27 === 'simulated-other-owner-token',
+          `lockContentAfter=${lockContentAfterP27}`,
+        );
+        fs.rmSync(lockPathP27, { force: true }); // 清理測試殘留鎖檔。
+      }
+
+      // ---------- P2-8:兩個併發 make tamper → 僅一個成功建備份、另一報錯;untamper 能還原 ----------
+      {
+        if (fs.existsSync(TAMPER_BACKUP_PATH)) fs.rmSync(TAMPER_BACKUP_PATH, { force: true });
+        const preTamperVerifyP28 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check('Phase 3b P2-8 前置:竄改前 make verify-chain 通過', preTamperVerifyP28.status === 0, preTamperVerifyP28.stdout.slice(-200));
+
+        const seqDbP28 = openDb();
+        const maxSeqP28 = (seqDbP28.prepare('SELECT MAX(seq) m FROM audit_chain').get() as { m: number }).m;
+        seqDbP28.close();
+        const seqAP28 = maxSeqP28 > 1 ? maxSeqP28 - 1 : maxSeqP28;
+        const seqBP28 = maxSeqP28;
+
+        const [tamperRaceA, tamperRaceB] = await Promise.all([
+          spawnAsync(TSX_BIN, ['scripts/tamper.ts', '--n', String(seqAP28)], { cwd: ROOT }),
+          spawnAsync(TSX_BIN, ['scripts/tamper.ts', '--n', String(seqBP28)], { cwd: ROOT }),
+        ]);
+        const successesP28 = [tamperRaceA, tamperRaceB].filter((r) => r.status === 0).length;
+        check(
+          `Phase 3b P2-8:併發兩個 make tamper(N=${seqAP28}/N=${seqBP28})→ 僅一個成功建備份(獨占 wx 建立,無 TOCTOU 空隙)`,
+          successesP28 === 1,
+          JSON.stringify({ a: tamperRaceA.status, b: tamperRaceB.status }),
+        );
+
+        const untamperRaceP28 = spawnSync(TSX_BIN, ['scripts/untamper.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check('Phase 3b P2-8:untamper 成功還原', untamperRaceP28.status === 0, untamperRaceP28.stdout + untamperRaceP28.stderr);
+        const verifyRaceP28 = spawnSync(TSX_BIN, ['scripts/verify-chain.ts'], { cwd: ROOT, encoding: 'utf-8' });
+        check('Phase 3b P2-8:untamper 後 make verify-chain 恢復全綠', verifyRaceP28.status === 0, verifyRaceP28.stdout.slice(-200));
+      }
+
+      // ---------- 收尾:demo-reset 還原,使 make test 連跑仍全綠 ----------
+      const finalReset49 = spawnSync(TSX_BIN, ['scripts/seed.ts'], { cwd: ROOT, encoding: 'utf-8' });
+      check('Phase 3b 第二輪收尾:make demo-reset(scripts/seed.ts)執行成功', finalReset49.status === 0, finalReset49.stdout.slice(-300) + finalReset49.stderr.slice(-300));
+    } finally {
+      await app49.close();
     }
   }
 

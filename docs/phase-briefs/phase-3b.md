@@ -12,6 +12,7 @@
 
 1. **`scripts/revoke.ts`(新)+ Makefile 目標**:`make revoke LIST=credentials|mandates IDX=<n>`——翻對應 bit 並以 FAB LE 鑰**重簽**該清單 JWT(經 server/keys.ts;寫 `data/status/credentials.jwt` / `mandates.jwt`);**不重啟服務即生效**(驗證方每次現抓 JWT——確認現行讀取路徑無快取,有就移除)。裸 JSON bit array 不得出現。
 2. **撤銷語意(server)**:重跑 `agent/run?case=A` 時 `pcf_dyeing-A`(idx 4)已撤 → 檢查①失敗 → `CREDENTIAL_REVOKED` DENY 入鏈;既有 RELEASED Dossier 依其輸入憑證 hash 對應之憑證撤銷狀態,查詢時標 **`DEPENDS_REVOKED`**(shared/codes.ts 補常數;不竄改 Dossier 原 JWS,狀態為衍生欄位)。
+   - **幕 6 待辦(Phase 3a 定案指定,本 phase 必補)**:`/api/human-sign` 目前只重驗凍結 Dossier 自洽,不對現況重跑撤銷檢查——PENDING_HUMAN → 放行之間若底層 `pcf_dyeing` 被撤仍會放行。本 phase 須在 human-sign 端補「放行前重驗 Dossier 三張輸入憑證(pcf_dyeing/pcf_aggregate + 其 precursor)之現況撤銷狀態」,任一已撤 → 拒放行(`DEPENDS_REVOKED`,入鏈),使已撤依據無法放行。回歸鎖:對 A 建 PENDING_HUMAN Dossier → 撤 idx 4 → human-sign 被拒 `DEPENDS_REVOKED`;重簽重聚合後新 Dossier 可放行。
 3. **重簽 + 重聚合**:`POST /api/issue/dyeing?case=A&reissue=1` → id `pcf_dyeing-A-reissue`、idx 8、新 `pcf_period`(2026-06,自 seed 讀,不寫死);`POST /api/aggregate?case=A`(reissue 路徑)→ 消費 reissue 後的 dyeing、**翻舊 aggregate idx 2 + 以 idx 11 簽新 aggregate**(見上方裁定);重跑 `agent/run?case=A` → 五項全綠。
 4. **verify-offline**:對重聚合後新產出的 presentation 通過;對撤銷前留存的舊 presentation 失敗(`CREDENTIAL_REVOKED`)。scripts/verify-offline.ts 本身不應需要改(檢查邏輯已含 status);若需改,說明理由。
 5. **輔線**:`make revoke LIST=mandates IDX=0`(撤 M1)→ `agent/run` 回 `MANDATE_REVOKED`。

@@ -72,3 +72,13 @@
 - **治理缺口(記入 README「什麼是真的/模擬的」)**:全站 localhost demo **無網路認證層**——`/api/human-sign`、`/api/mandates`(M1/M2 人簽)、`/api/agent/run` 等皆無 auth 閘(唯一 demo-mode 守門在 `/api/demo/sign-disclose-request` 的 workload 簽章 oracle)。人核可 = UI 確認對話框 + 獨立 `fab_cfo` ECR 鑰簽章;偽造高額 Dossier 需同時持 `fab-workload`(建卡)與 `fab_cfo`(放行)兩把伺服端私鑰(即「一方一鑰」信任邊界)。此為既有單人 demo 設計,非漏洞。
 - **幕 6 待辦(Phase 3b 必補)**:`human-sign` 目前只重驗凍結 Dossier 自洽,**不對現況重跑撤銷檢查**;PENDING_HUMAN → 放行之間若底層 `pcf_dyeing` 被撤仍會放行。幕 6 須在 human-sign 端補撤銷重驗(或標 `DOSSIER_STATUS.DEPENDS_REVOKED`,schema 已預留),使已撤依據無法放行。
 - **既有測試容量上限(LOW,非阻擋)**:`GET /api/audit?after=0` 有 `LIMIT 200`;連跑 3+ 次 `make test` 未 `demo-reset` 時累積稽核列破 200,以 after=0 計數差的測項會假失敗。DoD 契約(2 連跑 / demo-reset 後全綠)成立;若後續要根治,測試改以「操作前 seq 當游標」或測前自帶 reset。
+
+## Codex 審查定案(2026-08-30;Phase 3b 幕 6 稽核與撤銷;兩輪 Codex adversarial 共 15 發現;Phase 4 必須遵守)
+
+- **撤銷不重啟即生效**:撤銷一律翻 `data/status/*.jwt` 的 bit 並以 FAB LE 鑰重簽(`server/statuslist.ts` `revokeStatusIndex`);消費端每次現讀檔(經 `statusGuard.safeReadOrRefreshStatusListToken` fail-closed),無記憶體快取。裸 JSON bit array 不得出現。
+- **Dossier 撤銷重驗查凍結依據,非現況 case rows**:`human-sign`/`/api/dossiers` 的 `checkDossierInputsCurrent` 以 Dossier JWS **凍結的 `credential_hashes`** 查 `credential_history`(append-only 表,`hash` PK;`openDb()` 每次 `backfillCredentialHistory` 補既有列)取回「建卡當下那一版」sd_jwt,**且驗 `sha256(sd_jwt)===凍結 hash`(防換版)** 後才重驗其現況撤銷位;並驗 aggregate 之 `precursor_refs`(tc_rcs/pcf_upstream/pcf_dyeing)凍結版本+撤銷位。任一已撤 → `DEPENDS_REVOKED`(即使案件已 reissue supersede)。禁止改看現況 case rows(reissue 後會讓舊 Dossier 假性轉綠放行)。
+- **狀態清單發布端 fail-closed + 綁清單**:`revokeStatusIndex` 讀既有清單須驗 FAB 簽章、`header.typ==='statuslist+jwt'`、**`payload.sub===statusListUri(name)`**(防 credentials/mandates token 因共用簽章鑰而互換抹除撤銷);缺/壞/簽驗不過 → 拋錯不寫檔(不得從全 0 重建)。read-modify-write 經 `withStatusListLock`(owner-token = pid+uuid,釋放前重讀確認 owner 未被接管才刪)序列化,防並發覆蓋丟失撤銷位。
+- **重簽必重聚合(supersede)**:幕 6 reissue `pcf_dyeing`(idx8/新 period)後**必**重聚合 `pcf_aggregate`(翻舊 idx2 + 新 idx11),否則 agent/run 以 `AGGREGATE_STALE` 拒(3a 定案)。
+- **撤銷/稽核留痕**:所有 `revokeStatusIndex` 呼叫端(CLI `revoke.ts`、reissue supersede、`/api/audit/revoke`)一律 `appendAudit('admin:revoke', …)` 入鏈;`appendAudit` 本體(SELECT prev + INSERT)包在 `db.transaction().immediate()`,防並發分叉鏈(巢狀 immediate 於 better-sqlite3 不拋錯)。`recordCredentialHistory` 與 credential upsert 共用同一 immediate transaction(防半寫入使 Dossier 永久解不回)。
+- **tamper 備份可逆**:`tamper.ts` row-level JSON 側車備份以 `wx` 原子建立(已存在即拒、防覆寫破壞可逆性);先確認目標列存在才備份;無效 seq 報錯不動備份。
+- **殘留 LOW(單人 demo 邊角,需本機檔案寫入權,不阻擋)**:①`human-sign` 晚檢查讀檔到同步 CAS 之間,另一行程 revoke 的極短同步窗口理論競態——但只是 revoke/release 平手,已提交之撤銷必被兩道檢查擋下(PoC 證);②`withStatusListLock` stale(>5s)回收時互斥可能短暫鬆動(owner-token 已確保不誤刪他人鎖)。二者屬 localhost 單一操作者 demo 可接受範圍。

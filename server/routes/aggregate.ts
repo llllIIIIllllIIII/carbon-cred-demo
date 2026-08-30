@@ -44,20 +44,24 @@ function parseCaseId(caseId: unknown): PcfCaseId | null {
 
 export function registerAggregateRoutes(app: FastifyInstance): void {
   app.post('/api/aggregate', async (req, reply) => {
+    const query = (req.query ?? {}) as { case?: string; reissue?: string };
     const body = (req.body ?? {}) as { case_id?: string };
-    const caseId = parseCaseId(body.case_id);
+    const caseId = parseCaseId(query.case ?? body.case_id);
     if (!caseId) {
       return reply.code(400).send({ error: 'case_id 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
     }
+    // 幕 6:reissue=1(supersede 語意)——翻銷舊 aggregate slot、以備援 idx 簽新 aggregate
+    // (server/creds/pcfAggregate.ts issuePcfAggregate 之 opts.reissue;見該檔頭註解)。
+    const reissue = query.reissue === '1';
 
     const db = openDb();
     try {
-      // issuePcfAggregate 內部已原子落庫(遺留 c:insertCredentialIfAbsent,比照 store.ts 模式)——
-      // 本路由不得再自行 upsertCredential,否則會用「這次呼叫者自己的版本」覆寫落庫勝者,
-      // 重新引入遺留 c 要修的併發競態。
+      // issuePcfAggregate 內部已原子落庫(遺留 c:insertCredentialIfAbsent,比照 store.ts 模式;
+      // reissue 路徑則為 upsertCredential 之 supersede 落庫)——本路由不得再自行寫 credentials 表,
+      // 否則會用「這次呼叫者自己的版本」覆寫落庫勝者,重新引入遺留 c 要修的併發競態。
       let issuance: Awaited<ReturnType<typeof issuePcfAggregate>>;
       try {
-        issuance = await issuePcfAggregate(db, caseId);
+        issuance = await issuePcfAggregate(db, caseId, { reissue });
       } catch (e) {
         // v3.1:UpstreamVerificationError(CREDENTIAL_SIG_INVALID / VCT_ISSUER_UNAUTHORIZED /
         // CREDENTIAL_REVOKED)、AggregateGuardError(TC_REF_MISMATCH / SCOPE_CERT_INVALID /
@@ -86,6 +90,7 @@ export function registerAggregateRoutes(app: FastifyInstance): void {
       return {
         id: issuance.id,
         case_id: issuance.caseId,
+        reissued: reissue,
         // 三段疊層熱點圖真值(FAB 自己的資料,顯示於 FAB 自有閘道頁)——非可攜、非簽章 token。
         breakdown: {
           pcf_yarn: issuance.breakdown.pcfYarn,

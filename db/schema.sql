@@ -1,4 +1,4 @@
--- carbon-cred-demo 資料庫結構(10 張表;架構決策 §2;Phase 3a 新增 dossiers)
+-- carbon-cred-demo 資料庫結構(11 張表;架構決策 §2;Phase 3a 新增 dossiers;Phase 3b 新增 credential_history)
 -- 所有識別碼與數值皆為合成資料。
 
 PRAGMA foreign_keys = ON;
@@ -146,4 +146,21 @@ CREATE TABLE IF NOT EXISTS dossiers (
   created_at                TEXT NOT NULL DEFAULT (datetime('now')),
   released_at               TEXT,
   UNIQUE (mandate_id, request_nonce)
+);
+
+-- 11) 憑證歷史封存(append-only;Codex 審查 P1-1 修法;Phase 3b 補)
+-- credentials 表僅保留「現況」一列(id 為 PRIMARY KEY,reissue 會 upsert 覆蓋)——Dossier JWS
+-- 內凍結的 credential_hashes 卻是「建卡當下那一版」的 sha256(sd_jwt);reissue 後 credentials
+-- 表已找不到舊版內容,若撤銷重驗只查「現況 case rows」會誤判撤銷前留存的 Dossier 為安全
+-- (現況已重簽、未撤銷),放行本應依據已撤銷憑證之付款。本表由 server/creds/store.ts 於每次
+-- insertCredentialIfAbsent/upsertCredential 落庫時一併寫入(以 sd_jwt 之 sha256 為主鍵,
+-- INSERT OR IGNORE,同內容只留一份)——查驗端(server/routes/agent.ts checkDossierInputsCurrent)
+-- 以 Dossier 凍結之 hash 查回「那一版」sd_jwt,重新驗章並讀其自身 status.status_list.idx 查現況
+-- 撤銷位,而非信任 DB 現況列。
+CREATE TABLE IF NOT EXISTS credential_history (
+  hash          TEXT PRIMARY KEY,          -- sha256(sd_jwt) hex
+  id            TEXT NOT NULL,             -- 憑證邏輯 id(如 pcf_dyeing-A;reissue 前後相同)
+  type          TEXT NOT NULL,
+  sd_jwt        TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );

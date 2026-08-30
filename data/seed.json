@@ -276,7 +276,8 @@
       "verification_attestation": 7,
       "pcf_dyeing-A-reissue": 8,
       "tc_rcs": 9,
-      "ccs_scope_cert": 10
+      "ccs_scope_cert": 10,
+      "pcf_aggregate-A-reissue": 11
     },
     "mandates": {
       "M1": 0,
