@@ -4,20 +4,26 @@
  * A/B 差異全部來自本憑證:cases[case].heat_source / renewable_share + dyeing_defaults +
  * emission_factor_table 程式計算(不寫死結果)。reissue=1 = 幕 6 撤銷後重簽:改用
  * seed.status_list_idx 之 `pcf_dyeing-A-reissue` idx 與下一個月的 pcf_period。
+ * v3.1:公開層加 ccs_scope_ref = { sc_no, hash: sha256(ccs_scope_cert sd_jwt) }(自入庫的
+ * ccs_scope_cert 計算,染整廠不得在沒有 SC 參照下撐起 RCS 宣告)與 ccs_subcontractor_status
+ * (CCS-101 C5.2.1:associated——列於布廠 SC 下受稽核)。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import type Database from 'better-sqlite3';
 import type { DisclosureFrame } from '@sd-jwt/core';
 import type { SdJwtVcPayload } from '@sd-jwt/sd-jwt-vc';
 import { ROOT } from '../db';
 import { loadSandboxKey } from '../keys';
 import { buildIssuerInstance } from './issuer';
 import { statusListUri } from '../statuslist';
-import { round4 } from './tcCarbonUpstream';
+import { round4 } from './pcfUpstream';
+import { ensureCcsScopeCert } from './ccsScopeCert';
 import {
   PCF_DYEING_BRAND_SD_FIELDS,
   PCF_DYEING_AUDIT_SD_FIELDS,
+  type CcsScopeRef,
   type HeatSource,
   type PcfCaseId,
   type PcfDyeingPayload,
@@ -45,6 +51,7 @@ interface DyeingDefaults {
   pcf_method: string;
   pcf_factor_source: string;
   confidential: { boiler_model: string; fuel_contract: string; chemical_inventory: string; ppa_price: string };
+  ccs_subcontractor_status: string;
 }
 
 interface SeedData {
@@ -60,6 +67,11 @@ function readSeed(): SeedData {
 
 function sha256Hex(value: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+/** raw string 之 SHA-256 hex——用於 ccs_scope_ref.hash = sha256(ccs_scope_cert 之 compact SD-JWT 字串)。 */
+function sha256HexOfString(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 /** YYYY-MM 遞增一個月(幕 6 重簽之新報告期,不寫死具體月份字串)。 */
@@ -108,13 +120,22 @@ export interface PcfDyeingIssuance {
   reissue: boolean;
 }
 
-/** 簽出 pcf_dyeing(DYE sandbox LE AID 鑰;caseId 決定熱源/綠電比;reissue 用備援 idx 與新報告期)。 */
-export async function issuePcfDyeing(caseId: PcfCaseId, opts: { reissue?: boolean } = {}): Promise<PcfDyeingIssuance> {
+/**
+ * 簽出 pcf_dyeing(DYE sandbox LE AID 鑰;caseId 決定熱源/綠電比;reissue 用備援 idx 與新報告期)。
+ * db 用於取得(必要時先簽發並入庫)ccs_scope_ref 綁定之 ccs_scope_cert——染整廠不得在沒有
+ * SC 參照下撐起 RCS 宣告(v3.1)。
+ */
+export async function issuePcfDyeing(db: Database.Database, caseId: PcfCaseId, opts: { reissue?: boolean } = {}): Promise<PcfDyeingIssuance> {
   const seed = readSeed();
   const caseData = seed.cases[caseId];
   if (!caseData || (caseId !== 'A' && caseId !== 'B')) throw new Error(`未知案件 case_id=${caseId}(pcf_dyeing 僅支援 A/B)`);
   const d = seed.dyeing_defaults;
   const key = loadSandboxKey('dye');
+
+  // v3.1:ccs_scope_ref 自入庫(必要時先簽)的 ccs_scope_cert 計算。
+  const { row: scopeCertRow } = await ensureCcsScopeCert(db);
+  const scopeCertPayload = JSON.parse(scopeCertRow.payload_json) as { sc_no: string };
+  const ccsScopeRef: CcsScopeRef = { sc_no: scopeCertPayload.sc_no, hash: sha256HexOfString(scopeCertRow.sd_jwt) };
 
   const reissue = opts.reissue === true;
   const id = `pcf_dyeing-${caseId}`;
@@ -141,6 +162,8 @@ export async function issuePcfDyeing(caseId: PcfCaseId, opts: { reissue?: boolea
     process: d.process,
     facility_country: d.facility_country,
     zdhc_incheck_level: d.zdhc_incheck_level,
+    ccs_subcontractor_status: d.ccs_subcontractor_status,
+    ccs_scope_ref: ccsScopeRef,
     boiler_model_hash: sha256Hex(d.confidential.boiler_model),
     fuel_contract_hash: sha256Hex(d.confidential.fuel_contract),
     chemical_inventory_hash: sha256Hex(d.confidential.chemical_inventory),
@@ -159,7 +182,7 @@ export async function issuePcfDyeing(caseId: PcfCaseId, opts: { reissue?: boolea
     pcf_factor_source: d.pcf_factor_source,
   };
 
-  // 型別限制註記同 tcCarbonUpstream.ts:_sd 為固定欄位名稱字串,執行期原樣傳入 pack()。
+  // 型別限制註記同 pcfUpstream.ts:_sd 為固定欄位名稱字串,執行期原樣傳入 pack()。
   const disclosureFrame = {
     _sd: [...PCF_DYEING_BRAND_SD_FIELDS, ...PCF_DYEING_AUDIT_SD_FIELDS],
   } as unknown as DisclosureFrame<SdJwtVcPayload>;

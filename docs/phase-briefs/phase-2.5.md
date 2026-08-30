@@ -37,9 +37,9 @@ v3.0 遷移已完成並全綠(201 項):alias 改名(yarn/fab/dye/brand/cb)、pre
 
 1. `make setup` 乾淨環境一鍵成功(rm -rf .vlei data/vlei/* data/keys/* db/*.sqlite* 後重跑)。
 2. `make test` 全綠,且含九組 v3/v3.1 檢查(§3)。
-3. `git grep -iE "鴻鋼|Thép Việt|Bruck|台驗|扣件|線材|CBAM|海關|EAF|BF-BOF|USDC|6006" -- server web scripts data policies CLAUDE.md` 輸出為 0 行。
+3. 守門 grep 為 0 行。**規格疑義裁定(Opus 驗證揭出、記入 CLAUDE.md 定案)**:原完成條件的 `git grep -iE "…EAF…|6006…" -- server web scripts data policies CLAUDE.md` 掃到 `data/` 時,會機率性(實測約 25%)誤中 `data/vlei/manifest.json`(tracked 公開材料)裡隨機 CESR AID/SAID 的 `EAF`/`eaf` 子字串、與 `data/status/*.jwt` 的 ISO 時間戳裡的 `6006`——這些是生成的密碼學材料,非人寫的鋼鐵術語。故:**權威守門 = scripts/test.ts 的 case-sensitive `STEEL_RE`**(掃 authored 檔:server/shared/scripts/web/src/policies/CLAUDE.md 與 `data/seed.json`,不掃 data/vlei|data/status),它穩定、`make test` 不 flaky;**完成條件的外部 grep 對齊其檔案集**——排除生成材料:`git grep -iE "鴻鋼|Thép Việt|Bruck|台驗|扣件|線材|CBAM|海關|EAF|BF-BOF|USDC|6006" -- server web scripts policies CLAUDE.md data/seed.json`(即 `data` 只掃 `data/seed.json`)輸出為 0 行。
 4. `git status` 乾淨:`.vlei/`、`data/keys/`、`db/*.sqlite*` 未被追蹤。
-5. `make dev` 幕 1–4 可走通:幕 1 為兩張卡(TC 卡 + 碳憑證卡)、Tab 2 有 SC 小卡、無鋼鐵字樣;`npm run build`(web)通過。
+5. `make dev` 幕 1–4 可走通:幕 1 為兩張卡(TC 卡 + 碳憑證卡)、Tab 2 有 SC 小卡、無鋼鐵字樣;web build 通過(`cd web && npx vite build`;無 `npm run build` script)。
 6. Cedar:`checkParsePolicySet` 三條可解析;mandate entity `carbon_max_g == 9500`;A `carbon_total_g 7925` 過、B `10899` 不過;`context.subcontractor_listed = false` 時 p3 DENY。
 
 ## 3. 要新增/改寫的回歸測試(scripts/test.ts)

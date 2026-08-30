@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Manifest, DiscloseEvent } from '../App';
-import type { PrecursorRef } from '../../../shared/types';
+import type { AssociatedSubcontractor, CcsScopeRef, PrecursorRef } from '../../../shared/types';
 import { LeiBadge } from './badge';
 import { StackChart } from '../components/StackChart';
 import { DenyStamp } from '../components/DenyStamp';
@@ -20,9 +20,10 @@ interface AggregateResponse {
   breakdown: AggregateBreakdown;
   // F1:/api/aggregate 不再回完整可再揭露的 sd_jwt / 整包 claims(避免跨組織持有並自行揭露三個
   // 永不揭露分項)。憑證卡改讀明列的公開/品牌層欄位;跨組織揭露一律走 POST /api/disclose。
+  // v3.1:移除 hs6(不放稅則碼);加 ccs_scope_ref(布廠自己的 SC)。
   product: string;
-  hs6: string;
   origin: string;
+  ccs_scope_ref: CcsScopeRef;
   quantity_kg: number;
   precursor_refs: PrecursorRef[];
   status: { idx: number; uri: string };
@@ -36,6 +37,24 @@ interface AggregateResponse {
 interface AggregateErrorResponse {
   error?: string;
   reason_code?: string;
+}
+
+interface ScopeCertResponse {
+  claims: {
+    sc_no: string;
+    holder_name: string;
+    cb_name: string;
+    processes: Array<{ code: string; name: string; site: string }>;
+    associated_subcontractors: AssociatedSubcontractor[];
+  };
+}
+
+/** precursor_refs 固定順序(v3.1;spec §4.4):tc_rcs、pcf_upstream-<case>、pcf_dyeing-<case>。 */
+const PRECURSOR_LABELS: Record<string, string> = { tc_rcs: 'TC(認證機構)', pcf_upstream: '紗(紗廠)', pcf_dyeing: '染整(染整廠)' };
+
+function precursorLabel(id: string): string {
+  const prefix = Object.keys(PRECURSOR_LABELS).find((p) => id === p || id.startsWith(`${p}-`));
+  return prefix ? PRECURSOR_LABELS[prefix] : id;
 }
 
 /** A/B 差異只來自 pcf_dyeing 的燃料與綠電比(seed cases.A/B)。 */
@@ -62,6 +81,7 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [policies, setPolicies] = useState<PoliciesResponse | null>(null);
+  const [scopeCert, setScopeCert] = useState<ScopeCertResponse['claims'] | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -69,6 +89,13 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
       .then((r) => (r.ok ? (r.json() as Promise<PoliciesResponse>) : null))
       .then((data) => {
         if (alive) setPolicies(data);
+      })
+      .catch(() => {});
+    // v3.1:SC 小卡——ccs_scope_cert 由 CB 於 seed 時已簽發過,此處呼叫為冪等載入(reused)。
+    fetch('/api/issue/scope-cert', { method: 'POST' })
+      .then((r) => (r.ok ? (r.json() as Promise<ScopeCertResponse>) : null))
+      .then((data) => {
+        if (alive && data) setScopeCert(data.claims);
       })
       .catch(() => {});
     return () => {
@@ -100,8 +127,8 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
       <LeiBadge role={manifest?.fab} fallback="誠紡實業股份有限公司" />
       <h2>誠紡閘道 · 聚合簽發(幕 2)</h2>
       <p style={{ color: '#666' }}>
-        誠紡以持有者身分讀上游 tc_carbon_upstream(紗,Sợi Xanh Việt)與外包 pcf_dyeing(染整,彩合染整)、驗過簽章之後,程式計算自身產品(胚布)的三段聚合碳足跡並簽發
-        pcf_aggregate——<strong>下游拿到的憑證裡沒有紗廠是誰、沒有染整廠帳單,只有兩個參照指紋</strong>。
+        誠紡以持有者身分讀上游 pcf_upstream(紗,Sợi Xanh Việt)、外包 pcf_dyeing(染整,彩合染整)與認證機構簽發的 tc_rcs/ccs_scope_cert、驗過簽章之後,程式計算自身產品(胚布)的三段聚合碳足跡並簽發
+        pcf_aggregate——<strong>下游拿到的憑證裡沒有紗廠是誰、沒有染整廠帳單,只有三個參照指紋</strong>。
       </p>
 
       <label style={{ marginRight: 12 }}>
@@ -132,24 +159,39 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
             <h3 style={{ marginTop: 0 }}>pcf_aggregate 憑證卡</h3>
             <p style={{ fontSize: 12, color: '#666' }}>🟢 公開層(非 SD 明文) · 🟡 品牌層(M2 合約層)</p>
             <Row label="🟢 產品" value={result.product} />
-            <Row label="🟢 HS6" value={result.hs6} />
             <Row label="🟢 產地" value={result.origin} />
+            <Row label="🟢 ccs_scope_ref · sc_no" value={result.ccs_scope_ref.sc_no} />
             <Row label="🟡 出貨重量 quantity_kg" value={`${result.quantity_kg} kg`} />
             <Row label="🟡 聚合總值 pcf_total(品牌合約層)" value={`${result.breakdown.pcf_total} kgCO₂e/kg`} />
             {result.precursor_refs.map((ref, i) => (
               <div key={ref.id}>
-                <Row label={`🟢 參照指紋 #${i + 1} · id`} value={ref.id} />
-                <Row label={`🟢 參照指紋 #${i + 1} · hash`} value={ref.hash} />
+                <Row label={`🔗 參照指紋 #${i + 1} · ${precursorLabel(ref.id)} · id`} value={ref.id} />
+                <Row label={`🔗 參照指紋 #${i + 1} · ${precursorLabel(ref.id)} · hash`} value={ref.hash} />
               </div>
             ))}
             <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#666' }}>
-              precursor_refs 僅為兩張外部憑證(紗、染整)的 id + hash——不含上游任何明細(direct/indirect/生產路線等)。
+              precursor_refs 為三張外部憑證(TC、紗、染整)的 id + hash——不含上游任何明細(direct/indirect/生產路線等)。
             </p>
             <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#888' }}>
               pcf_aggregate 完整簽章 token 是誠紡內部簽發物,不由本端點對外交付——跨組織揭露一律走 Nordlicht 品牌
               Agent 的 <code>/api/disclose</code>(mandate + Cedar 逐 claim + 閘道 receipt)。
             </p>
           </div>
+
+          {scopeCert && (
+            <div style={{ border: '1px solid #6e5a1a', borderRadius: 8, padding: 16, marginTop: 16, background: '#fffdf5', maxWidth: 640 }}>
+              <h3 style={{ marginTop: 0 }}>Scope Certificate {scopeCert.sc_no}(CB 簽)</h3>
+              <Row label="持有者" value={scopeCert.holder_name} />
+              <Row label="認證機構" value={scopeCert.cb_name} />
+              <Row label="製程" value={scopeCert.processes.map((p) => p.name).join('、')} />
+              {scopeCert.associated_subcontractors.map((s) => (
+                <Row key={s.lei} label={`associated subcontractor · ${s.name}(${s.process})`} value={s.audited ? '✓ 已受稽核' : '未受稽核'} />
+              ))}
+              <p style={{ fontSize: 12, marginTop: 10, marginBottom: 0, color: '#666' }}>
+                下游拿到的憑證裡沒有紗廠是誰、沒有染整廠帳單——只有這張 SC 證明染整廠是布廠委外分包商、受布廠稽核。
+              </p>
+            </div>
+          )}
         </>
       )}
 

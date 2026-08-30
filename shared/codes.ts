@@ -13,6 +13,14 @@ export const CODES = {
   MANDATE_NOT_FOUND: 'MANDATE_NOT_FOUND',
   // Phase 2:該案 pcf_aggregate 尚未簽發(disclose 不自動代簽,依幕序先跑幕 2)
   PCF_AGGREGATE_NOT_ISSUED: 'PCF_AGGREGATE_NOT_ISSUED',
+  // v3.1(聚合前核對):pcf_upstream.tc_ref.hash 對不上 tc_rcs、seller_lei/buyer_lei 不符、
+  // 或 tcProductCertifiedWeight < quantity_kg;pcf_upstream 簽發時入庫 tc_rcs 缺失時亦回此碼
+  TC_REF_MISMATCH: 'TC_REF_MISMATCH',
+  // v3.1:pcf_dyeing.ccs_scope_ref.sc_no 與 ccs_scope_cert 不一致,或 DYE LEI 不在
+  // ccs_scope_cert.associated_subcontractors 內(幕 2 聚合前核對;幕 5 P3 context.subcontractor_listed=false)
+  CCS_SUBCONTRACTOR_NOT_LISTED: 'CCS_SUBCONTRACTOR_NOT_LISTED',
+  // v3.1:ccs_scope_cert 驗章/效期/Token Status List 任一不通過
+  SCOPE_CERT_INVALID: 'SCOPE_CERT_INVALID',
 
   // 政策決策
   POLICY_P1_PERMIT: 'POLICY_P1_PERMIT',

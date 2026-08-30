@@ -52,3 +52,12 @@
 - **稽核帶輪詢**:前端以最後收到的 seq 為游標(`/api/audit?after=<lastSeq>`)附加新事件,不得固定 after=0。
 - **H2(Phase 2 總驗收)**:跨組織 presentation 內只能有一個排放數字;分項欄位 NEVER_DISCLOSABLE 由政策層與 presenter 層雙重拒絕。v3 對象為 pcf_yarn / pcf_knitting / pcf_dyeing。
 - **F3/F4**:disclose 前驗被揭露憑證自身效期(CREDENTIAL_EXPIRED);presentation 由閘道簽章 receipt 綁定 presentation_hash + mandate_jti + request_nonce + aud + iat(RECEIPT_INVALID)。
+
+## Codex 審查定案(2026-08-30;Phase 2.5 v3.1 遷移;Phase 3a/3b 實作必須遵守)
+
+- **簽發者角色釘住(消費端)**:凡消費外部憑證(聚合、P3、驗證)一律在 `verifyCompactSdJwt` 之後斷言 `verifyResult.kid === manifest[expectedRole].aid`——`tc_rcs`/`ccs_scope_cert`→`cb`、`pcf_upstream`→`yarn`、`pcf_dyeing`→`dye`;不符即拒(`VCT_ISSUER_UNAUTHORIZED` 或該憑證的失敗碼)。只按 `header.kid` 解析「任一」manifest 角色 = 型別/簽發者混淆漏洞(FAB/YARN 可自鑄 TC/SC 使偽造欄位流進 M2 六欄)。
+- **憑證型別釘住**:`verifyScopeCert` 等「專驗某一種憑證」的函式,除簽發者角色外必須斷言 `payload.vct === <該 VCT>` 且 `payload.iss === verifyResult.kid`。因 CB 同時簽 `tc_rcs` 與 `ccs_scope_cert`,只驗角色會讓 `tc_rcs` 被誤當有效 SC。
+- **狀態清單消費端 fail-closed(禁 fail-open)**:消費端查撤銷一律經 `server/creds/statusGuard.ts` 的 `safeReadOrRefreshStatusListToken`——清單檔缺失/簽章或 typ 不符/bits 解碼失敗 → 回 `null` → 呼叫端 fail-closed(`CREDENTIAL_REVOKED` / `SCOPE_CERT_INVALID`);成功解碼且驗章通過才續用,**陳舊時保留既有 bits、只換新 iat 續簽**(不得重建為全 0)。禁止在缺/壞時回傳全 0 清單(= 抹除撤銷狀態的 fail-open)。續簽只在 FAB 信任邊界內(FAB 為清單發布方);**Brand 端驗證(verifyPresentation / verify 路由 / verify-offline)維持純 `readStatusListToken`,不簽不寫檔**。
+- **聚合消費端四輸入全驗**:`pcfAggregate.ensureInputs` 消費 `tc_rcs`(idx9)、`pcf_upstream`(idx0/1)、`pcf_dyeing`(idx4/5)、`ccs_scope_cert`(idx10)——四張皆驗簽 + 角色釘住 + 查撤銷位;`ccs_scope_ref` 除 `sc_no` 外必比 `hash === sha256(ccs_scope_cert.sdJwt)`(SC 以同 sc_no 重簽會遮蔽斷鏈)。
+- **三+二理由碼 DENY 入鏈**:`TC_REF_MISMATCH`/`CCS_SUBCONTRACTOR_NOT_LISTED`/`SCOPE_CERT_INVALID` 與新增之 `VCT_ISSUER_UNAUTHORIZED`/`CREDENTIAL_REVOKED`,凡在聚合路徑(含 `routes/aggregate.ts` catch 的 `TcRefMissingError`)觸發 DENY,一律經 `server/audit.ts` `recordDecision`(decisions 與 audit_chain 同交易);不得落到未入鏈的 500。
+- **守門 grep 排除生成密碼學材料**:完成條件的禁詞 grep 掃 `data/` 時只掃 `data/seed.json`,**排除 `data/vlei`(manifest 隨機 CESR AID/SAID 之大小寫不敏感子字串會誤中鋼鐵爐別縮寫)與 `data/status`(ISO 時間戳數字子字串誤中禁詞數列)**;權威守門 = `scripts/test.ts` 的 case-sensitive `STEEL_RE`(掃 authored 檔含 `data/seed.json`,不掃生成材料,並以 NEG 排除文件自我引用),`make test` 據此不 flaky。完成條件外部 grep 檔案集:`server web scripts policies CLAUDE.md data/seed.json`(即 `data` 只掃 seed)。

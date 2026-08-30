@@ -33,7 +33,7 @@ import { verifyCompactSdJwt } from './verifier';
 import { resolvePublicKeyFromManifest } from '../manifest';
 import { checkStatusBit, readStatusListToken, statusListUri } from '../statuslist';
 import { PCF_AGGREGATE_VCT } from './pcfAggregate';
-import { TC_CARBON_UPSTREAM_VCT } from './tcCarbonUpstream';
+import { PCF_UPSTREAM_VCT } from './pcfUpstream';
 import { PCF_DYEING_VCT } from './pcfDyeing';
 import { GATEWAY_AUD, RECEIPT_TYP, RECEIPT_AUDIENCE } from './mandate';
 import { CODES, type ReasonCode } from '../../shared/codes';
@@ -42,7 +42,7 @@ import type { Manifest, MandatePayload } from '../../shared/types';
 /** vct → 唯一被授權簽發該 vct 的角色(manifest 鍵)——遺留(a)之綁定表,動態查 AID,不硬編字面值。 */
 const VCT_ISSUER_ROLE: Record<string, string> = {
   [PCF_AGGREGATE_VCT]: 'fab',
-  [TC_CARBON_UPSTREAM_VCT]: 'yarn',
+  [PCF_UPSTREAM_VCT]: 'yarn',
   [PCF_DYEING_VCT]: 'dye',
 };
 

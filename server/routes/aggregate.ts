@@ -1,26 +1,44 @@
 /**
  * 幕 2 路由(架構決策 §4):
- *   POST /api/aggregate — 讀該案兩張外部輸入憑證 tc_carbon_upstream 與 pcf_dyeing(未簽發則依
- *     前置邏輯先簽)→ 以持有者身分消費前兩張皆先驗章(manifest 公鑰,驗不過回
- *     CODES.CREDENTIAL_SIG_INVALID,不得跳過)→ 程式計算三段聚合(spec v3 §4.4)→ 經
- *     server/keys.ts 載入 FAB sandbox LE AID 鑰簽 pcf_aggregate → 入 credentials 表。
- *     pcf_aggregate 不含上游任何明細欄位,precursor_refs 僅留兩張外部憑證 id + sha256 hash。
+ *   POST /api/aggregate — 呼叫 issuePcfAggregate() 之 ensureInputs(v3.1 四輸入:tc_rcs、
+ *     ccs_scope_cert、pcf_upstream、pcf_dyeing;未簽發則依前置邏輯先簽)→ 以持有者身分消費前
+ *     三張外部憑證皆先驗章(manifest 公鑰,驗不過回 CODES.CREDENTIAL_SIG_INVALID,不得跳過)、
+ *     ccs_scope_cert 另驗簽章/效期/Status List → v3.1 聚合前核對(tc_ref/ccs_scope_ref 綁定、
+ *     分包商清單;不符回 TC_REF_MISMATCH / SCOPE_CERT_INVALID / CCS_SUBCONTRACTOR_NOT_LISTED)→
+ *     程式計算三段聚合(spec v3.1 §4.4)→ 經 server/keys.ts 載入 FAB sandbox LE AID 鑰簽
+ *     pcf_aggregate → 入 credentials 表。pcf_aggregate 不含上游任何明細欄位,precursor_refs
+ *     留三張外部憑證(tc_rcs、pcf_upstream、pcf_dyeing)id + sha256 hash;不放稅則碼(無 hs6)。
  * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / issuePcfAggregate 取得。
  *
  * Codex 審查發現 2(case_id 靜默塌縮)修法:過去 `case_id === 'B' ? 'B' : 'A'` 會讓缺值或打錯字
  * 一律塌成 'A' 並真簽發憑證。改為顯式驗證,非 'A'/'B' 一律 400 + CODES.INVALID_CASE_ID。
+ *
+ * Opus 獨立驗證 MEDIUM #2 修法:issuePcfAggregate 拋出的所有驗證/核對失敗(CREDENTIAL_SIG_INVALID、
+ * VCT_ISSUER_UNAUTHORIZED、CREDENTIAL_REVOKED、TC_REF_MISMATCH、CCS_SUBCONTRACTOR_NOT_LISTED、
+ * SCOPE_CERT_INVALID)一律先經 server/audit.ts 之 recordDecision(effect=DENY)入鏈,再回 HTTP
+ * 錯誤——比照 CLAUDE.md 鐵則「所有 PERMIT/DENY/RELEASE/REPLAY_DETECTED 經 server/audit.ts 唯一
+ * 入口」,聚合路徑此前完全未入鏈(PoC:502 後 decisions/audit_chain 列數不變)。
+ *
+ * Codex 審查 P2 修法:ensureInputs()→issuePcfUpstream() 在入庫 tc_rcs 缺失/驗章失敗/簽發者非 cb 時
+ * 拋出 TcRefMissingError(reasonCode=TC_REF_MISMATCH),此前未被下方 catch 的 instanceof 涵蓋,
+ * 落到 500(未入鏈)而非承諾的 reason-coded 502 DENY——與 UpstreamVerificationError/
+ * AggregateGuardError 同一 catch 分支處理。
  */
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
-import { issuePcfAggregate, UpstreamVerificationError } from '../creds/pcfAggregate';
+import { issuePcfAggregate, UpstreamVerificationError, AggregateGuardError } from '../creds/pcfAggregate';
+import { TcRefMissingError } from '../creds/pcfUpstream';
+import { recordDecision } from '../audit';
 import { CODES } from '../../shared/codes';
-import type { PcfAggregateCaseId } from '../../shared/types';
+import type { PcfCaseId } from '../../shared/types';
+
+const ACTION = 'IssuePcfAggregate';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function parseCaseId(caseId: unknown): PcfAggregateCaseId | null {
+function parseCaseId(caseId: unknown): PcfCaseId | null {
   return caseId === 'A' || caseId === 'B' ? caseId : null;
 }
 
@@ -41,7 +59,19 @@ export function registerAggregateRoutes(app: FastifyInstance): void {
       try {
         issuance = await issuePcfAggregate(db, caseId);
       } catch (e) {
-        if (e instanceof UpstreamVerificationError) {
+        // v3.1:UpstreamVerificationError(CREDENTIAL_SIG_INVALID / VCT_ISSUER_UNAUTHORIZED /
+        // CREDENTIAL_REVOKED)、AggregateGuardError(TC_REF_MISMATCH / SCOPE_CERT_INVALID /
+        // CCS_SUBCONTRACTOR_NOT_LISTED)與 TcRefMissingError(ensureInputs 內
+        // issuePcfUpstream 因入庫 tc_rcs 缺失/驗章失敗/簽發者非 cb 而拒簽;P2)皆屬「輸入信任鏈
+        // 未通過核對」——與既有 CREDENTIAL_SIG_INVALID 一致回 502 + reason_code;入鏈後才回應(MEDIUM #2)。
+        if (e instanceof UpstreamVerificationError || e instanceof AggregateGuardError || e instanceof TcRefMissingError) {
+          recordDecision(db, {
+            action: ACTION,
+            effect: 'DENY',
+            reason_code: e.reasonCode,
+            case_id: caseId,
+            context: { error: e.message },
+          });
           return reply.code(502).send({ error: e.message, reason_code: e.reasonCode });
         }
         return reply.code(500).send({ error: errorMessage(e) });
@@ -64,9 +94,10 @@ export function registerAggregateRoutes(app: FastifyInstance): void {
           pcf_total: issuance.breakdown.total,
         },
         // 憑證卡顯示用之公開/品牌層欄位(明列,非整包 claims;三個永不揭露分項只在 breakdown 出現)。
+        // v3.1:移除 hs6(不放稅則碼);加 ccs_scope_ref(布廠自己的 SC,見 Gateway.tsx SC 小卡)。
         product: issuance.payload.product,
-        hs6: issuance.payload.hs6,
         origin: issuance.payload.origin,
+        ccs_scope_ref: issuance.payload.ccs_scope_ref,
         quantity_kg: issuance.payload.quantity_kg,
         precursor_refs: issuance.precursorRefs,
         status: issuance.payload.status.status_list,

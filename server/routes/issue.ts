@@ -1,15 +1,21 @@
 /**
  * 幕 1/2 前置路由(架構決策 §4):
- *   POST /api/issue/upstream — 經 server/keys.ts 載入 YARN sandbox LE AID 鑰簽 tc_carbon_upstream;
- *     機密欄僅 commitment hash;簽發結果寫入 credentials 表。**冪等**(M2 修正,見下)。
+ *   POST /api/issue/tc — 經 server/keys.ts 載入 CB sandbox LE AID 鑰簽 tc_rcs(v3.1;冪等,
+ *     複用 server/creds/tcRcs.ts 的 ensureTcRcs());A/B 兩案共用同一張。
+ *   POST /api/issue/scope-cert — 經 key loader 載入 CB LE 鑰簽 ccs_scope_cert(v3.1;冪等,
+ *     複用 server/creds/ccsScopeCert.ts 的 ensureCcsScopeCert());A/B 兩案共用同一張。
+ *   POST /api/issue/upstream — 經 server/keys.ts 載入 YARN sandbox LE AID 鑰簽 pcf_upstream;
+ *     機密欄僅 commitment hash;簽發前必先取入庫 tc_rcs(v3.1 tc_ref 綁定),不存在則 400 +
+ *     CODES.TC_REF_MISMATCH。簽發結果寫入 credentials 表。**冪等**(M2 修正,見下)。
  *   POST /api/issue/dyeing?case=A|B[&reissue=1] — 經 key loader 載入 DYE LE 鑰簽 pcf_dyeing;
- *     排放由係數表計算(熱源/鍋爐效率/綠電比)。reissue=1 = 幕 6 撤銷後重簽:改用備援 idx 與
- *     新報告期,並**替換**DB 既有那筆(upsert)——此為撤銷重簽語意,非一般冪等路徑。
+ *     排放由係數表計算(熱源/鍋爐效率/綠電比);公開層 ccs_scope_ref 自入庫 ccs_scope_cert 計算。
+ *     reissue=1 = 幕 6 撤銷後重簽:改用備援 idx 與新報告期,並**替換**DB 既有那筆(upsert)——
+ *     此為撤銷重簽語意,非一般冪等路徑。
  *   POST /api/creds/verify — Tab 1 demo 用之通用 SD-JWT 驗證(僅簽章 + 揭露完整性;
  *     Token Status List/vLEI 鏈屬幕 3 Brand 端管線,不在此檔範圍)。
  *   POST /api/creds/tamper-demo — 竄改 payload 1 byte,供前端接著打 /api/creds/verify
  *     展示 DoD 要求的失敗畫面(藍圖:133)。
- * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / issuePcfUpstream 取得。
+ * 本檔不直接讀鑰檔或 .vlei/state.json;金鑰一律經 server/keys.ts / 各 issue* 函式取得。
  *
  * M2 修正(Phase 1 總驗收):重複呼叫本路由(同一 case_id)過去會用新的隨機 disclosure 鹽重簽
  * 一份內容相同但 sd_jwt 逐位元不同的 pcf_upstream,並直接覆蓋 credentials 表既有那筆——若該
@@ -28,8 +34,10 @@
 import type { FastifyInstance } from 'fastify';
 import { openDb } from '../db';
 import { readManifest, resolvePublicKeyFromManifest } from '../manifest';
-import { issueTcCarbonUpstream } from '../creds/tcCarbonUpstream';
+import { issuePcfUpstream, TcRefMissingError } from '../creds/pcfUpstream';
 import { issuePcfDyeing } from '../creds/pcfDyeing';
+import { ensureTcRcs } from '../creds/tcRcs';
+import { ensureCcsScopeCert } from '../creds/ccsScopeCert';
 import { verifyCompactSdJwt } from '../creds/verifier';
 import { tamperPayloadByte } from '../creds/tamper';
 import { getCredential, insertCredentialIfAbsent, upsertCredential } from '../creds/store';
@@ -45,13 +53,57 @@ function parseCaseId(caseId: unknown): PcfCaseId | null {
 }
 
 export function registerIssueRoutes(app: FastifyInstance): void {
+  app.post('/api/issue/tc', async (_req, reply) => {
+    const db = openDb();
+    try {
+      const { row, reused } = await ensureTcRcs(db);
+      return {
+        id: row.id,
+        sd_jwt: row.sd_jwt,
+        claims: JSON.parse(row.payload_json) as Record<string, unknown>,
+        issued_at: row.issued_at,
+        valid_from: row.valid_from,
+        valid_until: row.valid_until,
+        issuer_party: row.issuer_party,
+        holder_party: row.holder_party,
+        reused,
+      };
+    } catch (e) {
+      return reply.code(500).send({ error: errorMessage(e) });
+    } finally {
+      db.close();
+    }
+  });
+
+  app.post('/api/issue/scope-cert', async (_req, reply) => {
+    const db = openDb();
+    try {
+      const { row, reused } = await ensureCcsScopeCert(db);
+      return {
+        id: row.id,
+        sd_jwt: row.sd_jwt,
+        claims: JSON.parse(row.payload_json) as Record<string, unknown>,
+        issued_at: row.issued_at,
+        valid_from: row.valid_from,
+        valid_until: row.valid_until,
+        issuer_party: row.issuer_party,
+        holder_party: row.holder_party,
+        reused,
+      };
+    } catch (e) {
+      return reply.code(500).send({ error: errorMessage(e) });
+    } finally {
+      db.close();
+    }
+  });
+
   app.post('/api/issue/upstream', async (req, reply) => {
     const body = (req.body ?? {}) as { case_id?: string };
     const caseId = parseCaseId(body.case_id);
     if (!caseId) {
       return reply.code(400).send({ error: 'case_id 必須是 "A" 或 "B"', reason_code: CODES.INVALID_CASE_ID });
     }
-    const id = `tc_carbon_upstream-${caseId}`;
+    const id = `pcf_upstream-${caseId}`;
 
     const db = openDb();
     try {
@@ -72,10 +124,14 @@ export function registerIssueRoutes(app: FastifyInstance): void {
         };
       }
 
-      let issuance: Awaited<ReturnType<typeof issueTcCarbonUpstream>>;
+      let issuance: Awaited<ReturnType<typeof issuePcfUpstream>>;
       try {
-        issuance = await issueTcCarbonUpstream(caseId);
+        issuance = await issuePcfUpstream(db, caseId);
       } catch (e) {
+        // v3.1:簽發前必先取入庫 tc_rcs——不存在拒簽,回 400 + TC_REF_MISMATCH(而非 500)。
+        if (e instanceof TcRefMissingError) {
+          return reply.code(400).send({ error: e.message, reason_code: e.reasonCode });
+        }
         return reply.code(500).send({ error: errorMessage(e) });
       }
 
@@ -85,7 +141,7 @@ export function registerIssueRoutes(app: FastifyInstance): void {
       try {
         const result = insertCredentialIfAbsent(db, {
           id: issuance.id,
-          type: 'tc_carbon_upstream',
+          type: 'pcf_upstream',
           caseId: issuance.caseId,
           issuerParty: issuance.issuerParty,
           holderParty: issuance.holderParty,
@@ -153,7 +209,7 @@ export function registerIssueRoutes(app: FastifyInstance): void {
 
       let issuance: Awaited<ReturnType<typeof issuePcfDyeing>>;
       try {
-        issuance = await issuePcfDyeing(caseId, { reissue });
+        issuance = await issuePcfDyeing(db, caseId, { reissue });
       } catch (e) {
         return reply.code(500).send({ error: errorMessage(e) });
       }

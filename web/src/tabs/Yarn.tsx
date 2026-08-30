@@ -7,7 +7,7 @@ type CaseId = 'A' | 'B';
 
 interface IssueResponse {
   id: string;
-  case_id: CaseId;
+  case_id?: CaseId;
   sd_jwt: string;
   claims: Record<string, unknown>;
   issued_at: string;
@@ -41,14 +41,38 @@ function describeVerifyFailure(reasonCode: string | undefined, error: string | u
   return `✗ 驗證失敗——${label}${error ? `(${error})` : ''}`;
 }
 
-/** Tab 1 · 越南紗廠簽發端主控台(幕 1:簽發 tc_carbon_upstream)。 */
+/**
+ * Tab 1 · 越南紗廠簽發端主控台(幕 1,v3.1 兩張卡;spec §4.2a/§4.2b)。
+ * 卡 1:CB(Lowland Certification)簽發之 tc_rcs(Transaction Certificate)——TC 本身沒有碳數據。
+ * 卡 2:紗廠簽發之 pcf_upstream——公開層 tc_ref 綁定卡 1(hash 指紋),碳只有紗廠有帳單能證明。
+ */
 export function Yarn({ manifest }: { manifest: Manifest | null }) {
   const [caseId, setCaseId] = useState<CaseId>('A');
+
+  const [tcIssuance, setTcIssuance] = useState<IssueResponse | null>(null);
+  const [tcBusy, setTcBusy] = useState(false);
+  const [tcError, setTcError] = useState<string | null>(null);
+
   const [issuance, setIssuance] = useState<IssueResponse | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null);
   const [tamperedToken, setTamperedToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function handleLoadTc() {
+    setTcBusy(true);
+    setTcError(null);
+    try {
+      const r = await fetch('/api/issue/tc', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? '載入 TC 失敗');
+      setTcIssuance(data as IssueResponse);
+    } catch (e) {
+      setTcError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTcBusy(false);
+    }
+  }
 
   async function handleIssue() {
     setBusy(true);
@@ -102,9 +126,33 @@ export function Yarn({ manifest }: { manifest: Manifest | null }) {
       <LeiBadge role={manifest?.yarn} fallback="Sợi Xanh Việt Co., Ltd.(越藍紗業)" />
       <h2>越南紗廠 · 簽發端主控台</h2>
       <p style={{ color: '#666' }}>
-        幕 1:以 Sợi Xanh Việt sandbox LE AID 鑰簽發 tc_carbon_upstream(SD-JWT VC)。一個簽章、N 張可撕欄位——欄位三分法見下方憑證卡。
+        幕 1(v3.1)兩張卡:卡 1 是認證機構(Lowland Certification)簽發的 Transaction Certificate;卡 2 是紗廠以 sandbox LE AID
+        鑰簽發的 pcf_upstream(SD-JWT VC)——一個簽章、N 張可撕欄位。
       </p>
-      <p style={{ color: '#888', fontSize: 13 }}>Textile Exchange TC 欄位;pcf_* 為我方延伸——TC 本身無碳數據。</p>
+
+      <h3>卡 1 · Transaction Certificate — 認證機構簽發</h3>
+      <p style={{ color: '#888', fontSize: 13 }}>
+        Textile Exchange TC 欄位(camelCase,ASR-104);TC 由賣方(紗廠)的認證機構簽發,<strong>本身沒有碳數據</strong>——碳在卡 2。
+      </p>
+      <button onClick={handleLoadTc} disabled={tcBusy}>
+        {tcBusy ? '載入中…' : '載入 CB 簽發的 TC'}
+      </button>
+      {tcError && <p style={{ color: 'crimson' }}>{tcError}</p>}
+      {tcIssuance && (
+        <>
+          {tcIssuance.reused && <p style={{ color: '#1a5fb4', fontWeight: 600 }}>ℹ️ 已簽發——載入既有 tc_rcs(CB 於 seed 時已簽發過)</p>}
+          <CredCard variant="tc_rcs" claims={tcIssuance.claims} sdJwt={tcIssuance.sd_jwt} />
+        </>
+      )}
+
+      <h3 style={{ marginTop: 32 }}>卡 2 · 碳足跡憑證 — 紗廠簽發</h3>
+      <p style={{ color: '#888', fontSize: 13 }}>
+        pcf_* 為我方延伸;公開層 <code>tc_ref</code> 以 hash 指紋鏈結卡 1 之 TC——
+        <em>TC 是認證機構開的但沒有碳;碳只有紗廠有帳單能證明,我們把兩條信任鏈綁在一起。</em>
+      </p>
+      <p style={{ fontSize: 12, color: '#666' }}>
+        三色:🟢 tc_ref / 產品代碼 / 產地 · 🟡 pcf_total / pcf_period / 稽核層(pcf_direct、pcf_indirect 等) · 🔴 單價 / 帳單 / 回收粒供應商名
+      </p>
 
       <label style={{ marginRight: 12 }}>
         案件:
@@ -124,7 +172,7 @@ export function Yarn({ manifest }: { manifest: Manifest | null }) {
           {issuance.reused && (
             <p style={{ color: '#1a5fb4', fontWeight: 600 }}>ℹ️ 已簽發——載入既有憑證(該案先前已簽發過,冪等未重簽)</p>
           )}
-          <CredCard claims={issuance.claims} sdJwt={issuance.sd_jwt} />
+          <CredCard variant="pcf_upstream" claims={issuance.claims} sdJwt={issuance.sd_jwt} />
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
             <button onClick={() => callVerify(issuance.sd_jwt)}>verify()</button>
             <button onClick={handleTamperDemo}>竄改 1 byte → 驗證失敗示範</button>
