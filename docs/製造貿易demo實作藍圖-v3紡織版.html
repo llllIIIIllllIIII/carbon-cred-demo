@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>紡織版實作藍圖 v3</title>
+<title>紡織版實作藍圖 v3.1</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@600;700;900&family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -191,7 +191,7 @@ footer b{color:var(--ink)}
 <body>
 
 <nav><div class="wrap">
-  <span class="brand">v3 紡織版</span>
+  <span class="brand">v3.1 紡織版</span>
   <a class="lnk" href="#flow">運作流程圖</a>
   <a class="lnk" href="#arch">節0 地基</a>
   <a class="lnk" href="#mock">UI 長相</a>
@@ -203,16 +203,17 @@ footer b{color:var(--ink)}
   <a class="lnk" href="#a6">幕6</a>
   <a class="lnk" href="#matrix">速查表</a>
   <a class="lnk" href="#days">時程</a>
+  <a class="lnk" href="#assets">素材交付</a>
 </div></nav>
 
 <header><div class="wrap">
-  <p class="eyebrow">TRACK 01 · 實作藍圖 v3 — 紡織(鞋用聚酯布)版</p>
+  <p class="eyebrow">TRACK 01 · 實作藍圖 v3.1 — 紡織(鞋用聚酯布)版 · 含 Yulia 審查兩項制度修正</p>
   <h1>一批回收聚酯網布的碳足跡,怎麼從越南紗廠走到歐洲品牌,而布廠的全廠產量一步都不出門</h1>
-  <p class="lede">這一頁是給寫程式的你,也是給想一眼看懂「換成紡織之後整條線怎麼跑」的人。開頭先給一張<b>運作流程圖</b>(五家法人 × 六幕),然後照 v2 的格式,每幕四個區塊:<b>① 供應鏈位置</b>、<b>② 技術細節</b>、<b>③ 呈現方式</b>、<b>④ 最小驗收與保底</b>,再加一塊 <b>Δ v2→v3</b> 標出這幕相對鋼鐵版改了什麼。技術層一行沒動;改的是角色、欄位、數值、劇本。</p>
+  <p class="lede">這一頁是給寫程式的你,也是給想一眼看懂「換成紡織之後整條線怎麼跑」的人。開頭先給一張<b>運作流程圖</b>(五家法人 × 六幕),然後照 v2 的格式,每幕四個區塊:<b>① 供應鏈位置</b>、<b>② 技術細節</b>、<b>③ 呈現方式</b>、<b>④ 最小驗收與保底</b>,再加一塊 <b>Δ v2→v3</b> 標出這幕相對鋼鐵版改了什麼。技術層一行沒動;改的是角色、欄位、數值、劇本。<b>v3.1</b>(8/29 晚)依 CCS-102 原文修了兩處:TC 由認證機構簽發、外包染整廠要有 Scope Certificate 上的分包商身分——認證機構因此從可砍的預簽序進了主線。</p>
   <div class="diff">
     <div><span class="k">供應鏈</span><span class="old">線材廠 → 扣件廠 → 進口商</span><br><span class="new">紗廠 → 布廠 → 品牌</span></div>
     <div><span class="k">壓力來源</span><span class="old">CBAM 硬法規</span><br><span class="new">品牌合約 · TC V4.0 · ESPR/DPP</span></div>
-    <div><span class="k">法人 / 角色</span><span class="old">4 LE + 2 ECR</span><br><span class="new">5 LE + 2 ECR</span>(多染整廠)</div>
+    <div><span class="k">法人 / 角色</span><span class="old">4 LE + 2 ECR</span><br><span class="new">5 LE + 2 ECR</span>(多染整廠;認證機構進主線)</div>
     <div><span class="k">A/B 差異</span><span class="old">電弧爐 vs 高爐</span><br><span class="new dye">染整燃料:天然氣 vs 燃煤</span></div>
     <div><span class="k">門檻 · 單位</span><span class="old">≤ 2.00 tCO₂e/t</span><br><span class="new">≤ 9.5 kgCO₂e/kg 布</span></div>
     <div><span class="k">幕 4 被擋欄位</span><span class="old">machine_energy</span><br><span class="new">plant_total_output</span></div>
@@ -228,7 +229,7 @@ footer b{color:var(--ink)}
   <p class="sec-intro">每個框是一個動作,框裡的第一行是它產出或消費的憑證;箭頭跨過泳道就是<b>跨組織</b>。<b>藍色框</b>是這一版新加的染整廠——A/B 兩案的差異全在它的鍋爐燃料,幕 6 撤的也是它的憑證。品牌那一列永遠只拿到<b>一個排放數字</b>。</p>
   <figure>
   <div class="flow">
-  <svg viewBox="0 0 1000 900" role="img" aria-label="紡織版六幕運作流程:紗廠簽 TC 加碳憑證給布廠;染整廠簽染整憑證給布廠,布廠聚合後簽 pcf_aggregate;品牌永續長簽 M2、Agent 查驗只拿六欄並離線驗證;加碼索取全廠產量被 Cedar P2 拒絕;布廠財務主管簽 M1,Agent 檢查門檻 9.5 後人簽放行、mock USD 電匯付染整廠;染整廠撤憑證後布廠重跑被拒、Dossier 標記依據已撤銷,重簽後重驗通過。底層為稽核鏈、Token Status List 與 vLEI Sandbox。">
+  <svg viewBox="0 0 1000 900" role="img" aria-label="紡織版六幕運作流程:認證機構簽 Transaction Certificate 與布廠的 Scope Certificate;紗廠簽碳足跡憑證並以 tc_ref 綁定 TC;染整廠簽染整憑證並參照布廠 SC 的分包商清單;布廠驗三張外部憑證與 SC 後聚合簽 pcf_aggregate;品牌永續長簽 M2、Agent 查驗只拿六欄並離線驗證;加碼索取全廠產量被 Cedar P2 拒絕;布廠財務主管簽 M1,Agent 檢查門檻 9.5 後人簽放行、mock USD 電匯付染整廠;染整廠撤憑證後布廠重跑被拒、Dossier 標記依據已撤銷,重簽後重驗通過。底層為稽核鏈、Token Status List 與 vLEI Sandbox。">
     <defs>
       <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
         <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
@@ -270,26 +271,35 @@ footer b{color:var(--ink)}
     <text class="s" x="8" y="599">brand-workload</text>
     <text class="t" x="8" y="708">CB 認證機構</text>
     <text class="s" x="8" y="724">Lowland · NL</text>
+    <text class="d" x="8" y="740">主線(v3.1)</text>
 
     <!-- 幕 1 -->
     <rect class="bx" x="96" y="58" width="138" height="121" rx="8"/>
-    <text x="104" y="74" class="t">簽 tc_carbon_upstream</text>
+    <text x="104" y="74" class="t">簽 pcf_upstream</text>
     <text x="104" y="89" class="s">SD-JWT VC · YARN LE 鑰</text>
-    <text x="104" y="104">🟢 TC 公開欄(tcNo…)</text>
-    <text x="104" y="119">🟡 成分·重量·inputTcNo</text>
-    <text x="104" y="134">🟡 pcf_total 3.00 /kg 紗</text>
+    <text x="104" y="104">🟢 tc_ref → CB 的 TC</text>
+    <text x="104" y="119">🟡 pcf_total 3.00 /kg 紗</text>
+    <text x="104" y="134">🟡 pcf_direct · indirect</text>
     <text x="104" y="149">🔴 帳單·單價·供應商名</text>
     <text x="104" y="164" class="s">A / B 兩案相同</text>
-    <line class="ln" x1="165" y1="179" x2="165" y2="366"/>
-    <text class="lab" x="159" y="280" text-anchor="end">紗憑證</text>
-    <rect class="bx" x="96" y="368" width="138" height="46" rx="8"/>
-    <text x="104" y="384" class="t">持有紗憑證(買方)</text>
-    <text x="104" y="399" class="s">驗簽章後入庫</text>
+    <line class="ln" x1="190" y1="179" x2="190" y2="366"/>
+    <text class="lab" x="184" y="280" text-anchor="end">紗憑證</text>
+    <rect class="bx" x="96" y="368" width="138" height="61" rx="8"/>
+    <text x="104" y="384" class="t">持有 TC + 紗憑證</text>
+    <text x="104" y="399" class="s">核對 tc_ref hash、買賣雙方</text>
+    <text x="104" y="414" class="m">≠ → TC_REF_MISMATCH</text>
+    <line class="ln" x1="140" y1="686" x2="140" y2="431"/>
+    <text class="lab" x="146" y="560">TC ↑</text>
+    <rect class="bx" x="96" y="688" width="138" height="76" rx="8"/>
+    <text x="104" y="704" class="t">簽 tc_rcs(TC)</text>
+    <text x="104" y="719" class="s">賣方紗廠 · 買方布廠</text>
+    <text x="104" y="734" class="s">CCS-102 E2.1 由 CB 簽</text>
+    <text x="104" y="749" class="pass">volume_reconciled ✓</text>
 
     <!-- 幕 2 -->
     <rect class="bx hi" x="246" y="213" width="138" height="121" rx="8"/>
     <text x="254" y="229" class="d">簽 pcf_dyeing</text>
-    <text x="254" y="244" class="s">SD-JWT VC · DYE LE 鑰</text>
+    <text x="254" y="244">🟢 參照布廠 SC 名單</text>
     <text x="254" y="259">A 天然氣+30% 綠電</text>
     <text x="254" y="274" class="pass">→ 3.63 kgCO₂e/kg</text>
     <text x="254" y="289" class="deny">B 燃煤 → 6.60</text>
@@ -297,14 +307,22 @@ footer b{color:var(--ink)}
     <text x="254" y="319" class="d">★ A/B 唯一差異來源</text>
     <line class="ln dye" x1="315" y1="334" x2="315" y2="366"/>
     <text class="lab dye" x="322" y="354">染整憑證</text>
-    <rect class="bx" x="246" y="368" width="138" height="121" rx="8"/>
-    <text x="254" y="384" class="t">驗兩張外部憑證</text>
-    <text x="254" y="399">紗 3.16 + 織 1.14</text>
-    <text x="254" y="414">+ 染整 3.63 / 6.60</text>
-    <text x="254" y="429" class="t">= 7.93 / 10.90</text>
-    <text x="254" y="444" class="t">簽 pcf_aggregate</text>
-    <text x="254" y="459">precursor_refs ×2 指紋</text>
-    <text x="254" y="474" class="s">熱點圖三段(Tab 2)</text>
+    <rect class="bx" x="246" y="368" width="138" height="136" rx="8"/>
+    <text x="254" y="384" class="t">驗三張外部憑證+SC</text>
+    <text x="254" y="399" class="s">tc_ref ✓ · SC 分包商 ✓</text>
+    <text x="254" y="414">紗 3.16 + 織 1.14</text>
+    <text x="254" y="429">+ 染整 3.63 / 6.60</text>
+    <text x="254" y="444" class="t">= 7.93 / 10.90</text>
+    <text x="254" y="459" class="t">簽 pcf_aggregate</text>
+    <text x="254" y="474">precursor_refs ×3 指紋</text>
+    <text x="254" y="489" class="s">熱點圖三段(Tab 2)</text>
+    <line class="ln" x1="290" y1="686" x2="290" y2="506"/>
+    <text class="lab" x="296" y="600">SC ↑</text>
+    <rect class="bx" x="246" y="688" width="138" height="76" rx="8"/>
+    <text x="254" y="704" class="t">簽 ccs_scope_cert</text>
+    <text x="254" y="719" class="s">布廠 SC · 製程 針織</text>
+    <text x="254" y="734">分包商:彩合染整 ✓</text>
+    <text x="254" y="749" class="s">CCS-102 D3.4 · seed 時簽</text>
 
     <!-- 幕 3 -->
     <rect class="bx" x="396" y="368" width="138" height="121" rx="8"/>
@@ -357,15 +375,16 @@ footer b{color:var(--ink)}
     <line class="ln" x1="800" y1="368" x2="800" y2="291"/>
     <text class="lab" x="765" y="322" text-anchor="middle">invoice ↓</text>
     <text class="lab" x="765" y="338" text-anchor="middle">mock 電匯 ↑</text>
-    <rect class="bx" x="696" y="368" width="138" height="136" rx="8"/>
+    <rect class="bx" x="696" y="368" width="138" height="151" rx="8"/>
     <text x="704" y="384" class="t">財務主管 ECR 簽 M1</text>
-    <text x="704" y="399" class="s">Agent-1 P3 四要件:</text>
-    <text x="704" y="414">身分·門檻·發票·風險</text>
-    <text x="704" y="429" class="pass">A → Dossier → 人簽</text>
-    <text x="704" y="444">→ mock USD 電匯 3,420</text>
-    <text x="704" y="459" class="deny">B 10.90 &gt; 9.5 → 轉人工</text>
-    <text x="704" y="474" class="m">CARBON_OVER_</text>
-    <text x="704" y="489" class="m">THRESHOLD</text>
+    <text x="704" y="399" class="s">Agent-1 P3 五要件:</text>
+    <text x="704" y="414">身分·SC 分包商·門檻</text>
+    <text x="704" y="429">·發票·帳戶風險</text>
+    <text x="704" y="444" class="pass">A → Dossier → 人簽</text>
+    <text x="704" y="459">→ mock USD 電匯 3,420</text>
+    <text x="704" y="474" class="deny">B 10.90 &gt; 9.5 → 轉人工</text>
+    <text x="704" y="489" class="m">CARBON_OVER_</text>
+    <text x="704" y="504" class="m">THRESHOLD</text>
     <rect class="bx note" x="696" y="533" width="138" height="61" rx="8"/>
     <text x="704" y="549" class="s">門檻 9.5 =</text>
     <text x="704" y="564" class="s">品牌合約條款</text>
@@ -411,7 +430,7 @@ footer b{color:var(--ink)}
     <text x="712" y="802" class="t">vLEI Sandbox(mock 模式)</text>
     <text x="712" y="817" class="s">5 LE + 2 ECR 預簽;鑰經 key loader 匯出</text>
     <text x="712" y="832" class="s">法人/角色撤銷 = TEL(不掛應用層清單)</text>
-    <text class="s" x="96" y="878">鞋廠(付款方、子集委任只答是/否)、稽核層開啟月度承諾值、送出前一致性檢查:已設計、未實作,只做投影片。所有公司名、LEI、金額、數值皆為合成資料。</text>
+    <text class="s" x="96" y="878">v3.1:TC 由 CB 簽(E2.1)、染整廠列於布廠 SC 為 associated subcontractor(D3.4)。鞋廠、稽核層開啟月度承諾值、一致性檢查:已設計、未實作,只做投影片。所有名稱與數值皆為合成資料。</text>
   </svg>
   </div>
   <figcaption><b>看圖的順序:</b>幕 1、2 是「把憑證做出來」(紗廠、染整廠各簽一張,布廠疊成一張);幕 3、4 是「別人來查」(品牌只拿六欄、越界就被擋);幕 5 是「錢與碳綁在同一筆交易」(布廠付染整費前先看染整段有沒有把整批推過 9.5);幕 6 是「事後能抓、事中能拔插頭」(撤染整憑證,所有引用它的文件立刻變色)。</figcaption>
@@ -437,9 +456,9 @@ footer b{color:var(--ink)}
       <div class="abox"><span class="t">scripts/</span>presign(5 LE + 2 ECR)· seed.ts · revoke.ts · tamper.sh · verify-chain.ts · verify-offline.ts<small>終端畫面也是 demo 的一部分</small></div>
     </div>
     <div class="keys">
-      <span>🔑 YARN 紗廠 LE 鑰</span><span>🔑 DYE 染整廠 LE 鑰(新)</span><span>🔑 FAB 布廠 LE 鑰</span><span>🔑 BRAND 品牌 LE 鑰</span><span>🔑 CB 認證機構 LE 鑰</span><span>🔑 FAB 財務主管 ECR(M1 + 幕 5 人簽)</span><span>🔑 BRAND 永續長 ECR(M2)</span><span class="app">🔑 fab-workload(app)</span><span class="app">🔑 brand-workload(app)</span>
+      <span>🔑 YARN 紗廠 LE 鑰</span><span>🔑 DYE 染整廠 LE 鑰(新)</span><span>🔑 FAB 布廠 LE 鑰</span><span>🔑 BRAND 品牌 LE 鑰</span><span>🔑 CB 認證機構 LE 鑰(v3.1 主線:tc_rcs、ccs_scope_cert)</span><span>🔑 FAB 財務主管 ECR(M1 + 幕 5 人簽)</span><span>🔑 BRAND 永續長 ECR(M2)</span><span class="app">🔑 fab-workload(app)</span><span class="app">🔑 brand-workload(app)</span>
     </div>
-    <p class="mock-cap" style="margin-top:14px"><b>v3 遷移(Phase 2.5)必做:</b>① presign 多一個 actor <span class="m" style="font-family:var(--mono)">dye</span>、LEI 字首與虛構名換紡織版,manifest 7 個角色;② <span class="m" style="font-family:var(--mono)">data/seed.json</span> 整檔換成 seed.v3.json(所有數值由係數表算,不寫死);③ 三張憑證的欄位常數與 tag(public / brand / audit / confidential);④ claims.ts 機密名單、NEVER_DISCLOSABLE 三段、M2 六欄;⑤ 前端文案與三段熱點圖;⑥ 測試寫死值與七組新檢查。<b>技術層零改動。</b></p>
+    <p class="mock-cap" style="margin-top:14px"><b>v3 遷移(Phase 2.5)必做:</b>① presign 多一個 actor <span class="m" style="font-family:var(--mono)">dye</span>、LEI 字首與虛構名換紡織版,manifest 7 個角色;② <span class="m" style="font-family:var(--mono)">data/seed.json</span> 整檔換成 seed.v3.json(所有數值由係數表算,不寫死);③ 五張憑證的欄位常數與 tag(public / brand / audit / confidential;v3.1 多 CB 簽的 tc_rcs 與 ccs_scope_cert);④ claims.ts 機密名單、NEVER_DISCLOSABLE 三段、M2 六欄;⑤ 前端文案與三段熱點圖;⑥ 測試寫死值與七組新檢查。<b>技術層零改動。</b></p>
   </div>
 </div></section>
 
@@ -458,10 +477,10 @@ footer b{color:var(--ink)}
     <div class="mock-pane on">
       <span class="lei">LEI 9845…VN001 · Sợi Xanh Việt Co., Ltd.(越藍紗業)</span>
       <div class="wfrow">
-        <div class="wf"><b>批次表單(seed 預填,欄位名就是 TE 的 camelCase)</b><br><span class="m">tcNo, tcProductStandardLabelGrade RCS 100, tcProductCertifiedWeight 3000, inputTcNo, pcf_direct 0.42, electricity 3.91 kWh/kg…</span></div>
-        <div class="wf green"><b>[ 簽發 SD-JWT 憑證 ▶ ]</b><br>按下去才簽,不是播動畫;旁註「TC 本身沒有碳數據,pcf_* 是我們補的」</div>
+        <div class="wf dye"><b>卡 1 · Transaction Certificate(認證機構 Lowland 簽發,v3.1)</b><br><span class="m">tcNo CB-LLC-TC-20260602-00417 · RCS 100 · seller 紗廠 / buyer 布廠 · tcProductCertifiedWeight 3000 · inputTcNo · volume_reconciled ✓</span><br>按鈕「載入 CB 簽發的 TC」;旁註「TC 是認證機構開的,而且沒有碳」</div>
+        <div class="wf green"><b>[ 簽發碳足跡憑證 pcf_upstream ▶ ]</b><br>按下去才簽,不是播動畫;公開層 <span class="m">tc_ref {id, hash}</span> 旁畫鏈結圖示指向卡 1;旁註「碳只有紗廠有帳單能證明——兩條信任鏈綁在一起」</div>
       </div>
-      <div class="wf"><b>憑證卡</b> — 🟢 公開 ×7(tcNo、RCS 100、產地…)· 🟡 可撕 ×11(成分比例、認證重量、inputTcNo、pcf_total 3.00…)· 🔴 僅指紋 ×4(帳單、單價、供應商名…)<br><span class="m">raw: eyJhbGci…&lt;JWT&gt; ~ &lt;d1&gt; ~ &lt;d2&gt; ~ …</span> ← 旁註「1 個簽章 + N 張可撕欄位」</div>
+      <div class="wf"><b>卡 2 · 憑證卡</b> — 🟢 公開 ×7(tc_ref、產品碼、產地、四個 hash…)· 🟡 可撕 ×8(pcf_total 3.00、pcf_period、quantity_kg、pcf_direct·indirect、係數來源…)· 🔴 僅指紋 ×3(帳單、單價、供應商名)<br><span class="m">raw: eyJhbGci…&lt;JWT&gt; ~ &lt;d1&gt; ~ &lt;d2&gt; ~ …</span> ← 旁註「1 個簽章 + N 張可撕欄位」</div>
     </div>
     <div class="mock-pane">
       <span class="lei">LEI 9845…NG001 · 誠紡實業股份有限公司</span>
@@ -471,9 +490,10 @@ footer b{color:var(--ink)}
       </div>
       <div class="wfrow">
         <div class="wf dye"><b>疊層熱點圖(SVG,三段綁真值)</b><br>紗 3.16 ▓▓▓ + 織布 1.14 ▓ + 染整 <b>3.63</b> ▓▓▓ = 7.93 ─┤9.5<br>案 B:染整段變紅 6.60,合計 10.90 越過門檻線</div>
-        <div class="wf green"><b>[ 聚合簽發 pcf_aggregate ▶ ]</b><br>先驗紗憑證與染整憑證簽章;下游只拿到兩個參照指紋</div>
+        <div class="wf green"><b>[ 聚合簽發 pcf_aggregate ▶ ]</b><br>先驗 TC、紗憑證、染整憑證三張簽章,核對 tc_ref 與 SC 分包商;下游只拿到三個參照指紋</div>
       </div>
-      <div class="wf"><b>Agent-1 放行管線(幕 5)</b> — DYE 身分 ✓ · pcf_total ≤ 9.5 ✓ · 發票 ✓ · 收款帳戶風險 ✓ → Dossier → 「以財務主管 ECR 金鑰簽署」對話框 → mock USD 電匯指令 → <span class="m">RELEASED</span></div>
+      <div class="wf dye"><b>Scope Certificate 卡(v3.1)</b> — <span class="m">LLC-SC-2026-0142</span> · 持有人 誠紡實業 · 認證機構 Lowland 簽 · 製程 針織 · associated subcontractor <b>彩合染整(染整)✓</b> · 效期至 2027-01-14 · 不符 → <span class="m">CCS_SUBCONTRACTOR_NOT_LISTED</span></div>
+      <div class="wf"><b>Agent-1 放行管線(幕 5)</b> — DYE 身分 ✓ · 染整廠在 SC 分包商清單 ✓ · pcf_total ≤ 9.5 ✓ · 發票 ✓ · 收款帳戶風險 ✓ → Dossier → 「以財務主管 ECR 金鑰簽署」對話框 → mock USD 電匯指令 → <span class="m">RELEASED</span></div>
     </div>
     <div class="mock-pane">
       <span class="lei">LEI 9845…HT001 · Nordlicht Sports AG</span>
@@ -495,31 +515,31 @@ footer b{color:var(--ink)}
       </div>
       <div class="wf"><b>Dossier 列表</b><br><span class="m">dossier-A · RELEASED</span> → 染整憑證被撤後出現黃 badge「<b>依據已撤銷,需重驗</b>」→ 染整廠重簽、布廠重聚合 → 重驗綠</div>
     </div>
-    <div class="audit-strip">稽核帶 ▸ #41 disclose PERMIT P1 sig=8f2a… ▸ <i>#42 deny P2 POLICY_P2_CONFIDENTIAL</i> ▸ #43 emit_release dossier-A ▸ #44 human_sign fab_cfo RELEASED ▸ <i>#45 revoke credentials idx4</i> ▸ #46 rerun A CREDENTIAL_REVOKED ▸ _</div>
+    <div class="audit-strip">稽核帶 ▸ #41 disclose PERMIT P1 sig=8f2a… ▸ <i>#42 deny P2 POLICY_P2_CONFIDENTIAL</i> ▸ #43 emit_release dossier-A ▸ #44 human_sign fab_cfo RELEASED ▸ <i>#45 revoke credentials idx4</i> ▸ #46 rerun A CREDENTIAL_REVOKED ▸ <i>#47 aggregate DENY TC_REF_MISMATCH</i> ▸ _</div>
   </div>
-  <p class="mock-cap"><b>錄影原則:</b>鏡頭只拍「狀態改變 + 理由碼」。按鈕按下去 → 東西變色 → 理由碼出現,一幕一個重點,不要滑來滑去。</p>
+  <p class="mock-cap"><b>錄影原則:</b>鏡頭只拍「狀態改變 + 理由碼」。按鈕按下去 → 東西變色 → 理由碼出現,一幕一個重點,不要滑來滑去。<b>總長 ≤ 2:30、分幕輸出成獨立檔並附時間碼表</b>——5 分鐘簡報含播放時間,超時部分不計分。</p>
 </div></section>
 
 <!-- ================= 幕1 ================= -->
 <section id="a1"><div class="wrap">
   <div class="act">
-    <div class="act-head"><span class="num">1</span><h3>簽發 — 紗廠開出「TC + 碳」憑證</h3><span class="when done">已完成 · 遷移只換欄位</span></div>
+    <div class="act-head"><span class="num">1</span><h3>簽發 — 認證機構開 TC,紗廠開碳憑證,兩張綁在一起</h3><span class="when done">已完成 · 遷移換欄位 + 多一張 CB 憑證</span></div>
     <div class="blk pos"><span class="lab">① 供應鏈位置</span>
-      <p>最上游 Tier-2、<b>整條信任鏈的源頭</b>。程式跑在「越藍紗業的系統」(= Tab 1 + YARN 的 sandbox LE 鑰)。這一步不跨組織——但它簽出來的東西,後面每一幕都要驗。產業現況:每交一筆貨開一張 TC,半紙本半 PDF,而且 TC 裡<b>沒有碳數據</b>(Textile Exchange 官方文件確認)。</p></div>
+      <p>最上游 Tier-2、<b>整條信任鏈的源頭</b>,而且一開始就<b>跨兩個組織</b>:認證機構 Lowland(CB)簽 Transaction Certificate、越藍紗業(YARN)簽碳足跡憑證,兩張都在 Tab 1 出現。產業現況:每交一筆貨由<b>賣方的認證機構</b>開一張 TC(CCS-102 E2.1,簽發前審文件與數量勾稽),半紙本半 PDF,而且 TC 裡<b>沒有碳數據</b>(Textile Exchange 官方文件確認)——碳只有紗廠自己的帳單能證明。</p></div>
     <div class="blk tech"><span class="lab">② 技術細節</span>
       <ul>
-        <li>憑證:<b>SD-JWT VC</b>(<code>@sd-jwt/core</code> + <code>@sd-jwt/sd-jwt-vc</code>);欄位名照 <b>Textile Exchange TC 的 camelCase 鍵名</b>原樣(tcNo、tcProductStandardLabelGrade、tcProductCertifiedWeight、inputTcNo…),碳欄位用 <code>pcf_</code> 前綴標示為我方延伸。</li>
-        <li>欄位三分法:<b>非 SD 明文</b> = TC 公開欄(證書號、RCS 100、產地 VN、TE 識別碼);<b>SD 可撕欄位</b> = 成分比例 RM0186 100%、認證重量 3,000 kg、inputTcNo(上游 TC 鏈結)、<code>pcf_total 3.00</code>(品牌層)+ <code>pcf_direct 0.42 / pcf_indirect 2.58</code>、係數來源(稽核層);<b>機密根本不進憑證</b> — 發票號、單價、電費帳單、回收粒供應商名只留 commitment hash + <code>emission_factor_table_hash</code>。</li>
-        <li>簽章鑰 = YARN 的 sandbox LE AID 鑰(SD-JWT ✓ 與 vLEI 鏈 ✓ 是同一把);憑證掛 Token Status List idx 0(A)/ 1(B);A/B 兩案紗憑證相同。</li>
-        <li><code>pcf_indirect = 3.91 kWh × 越南電網 0.6592</code>,由程式算,不寫死。</li>
+        <li><b>兩張憑證,兩把鑰</b>(v3.1):<code>tc_rcs</code> 由 <b>CB 的 sandbox LE 鑰</b>簽,欄位照 <b>Textile Exchange TC 的 camelCase 鍵名</b>原樣(tcNo、tcProductStandardLabelGrade、tcProductCertifiedWeight、inputTcNo、seller/buyer…)加 <code>volume_reconciled: true</code>(E2.1.8 數量勾稽的結果宣告);<code>pcf_upstream</code> 由 <b>YARN 的 sandbox LE 鑰</b>簽,公開層帶 <code>tc_ref = {id, hash: sha256(tc_rcs)}</code> 綁住那張 TC——TC 不存在就拒簽。</li>
+        <li>欄位三分法(pcf_upstream):<b>非 SD 明文</b> = tc_ref、產品碼、產地 VN;<b>SD 可撕欄位</b> = <code>pcf_total 3.00</code>、pcf_period、quantity_kg(品牌層)+ <code>pcf_direct 0.42 / pcf_indirect 2.58</code>、係數來源(稽核層);<b>機密根本不進憑證</b> — 單價、電費帳單、回收粒供應商名只留 commitment hash + <code>emission_factor_table_hash</code>。tc_rcs 的成分比例、認證重量、inputTcNo 為品牌層 SD,發票號只留 hash。</li>
+        <li>兩把都是 sandbox LE AID 鑰(SD-JWT ✓ 與 vLEI 鏈 ✓ 同一把);Status List idx:tc_rcs 9、pcf_upstream 0(A)/ 1(B);A/B 兩案紗憑證相同。</li>
+        <li><code>pcf_indirect = 3.91 kWh × 越南電網 0.6592</code>,由程式算,不寫死;布廠幕 2 會核對 <code>tc_ref</code> 的 hash、seller/buyer LEI 與認證重量 ≥ 批次數量,不符 → <code>TC_REF_MISMATCH</code>。</li>
       </ul></div>
     <div class="blk show"><span class="lab">③ 呈現方式</span>
-      <p>Tab 1:預填表單(欄位名就是 TE 的鍵名)→ 按「簽發」→ 憑證卡出現,欄位用 🟢🟡🔴 三色標;下方印出原始 token <code>&lt;JWT&gt;~&lt;d1&gt;~&lt;d2&gt;…</code>。口白:「產業已經在跑 TC,一批貨一張、半紙本半 PDF;我們讓同一張證帶著碳、而且可驗。」</p></div>
+      <p>Tab 1:先出現卡 1「Transaction Certificate — Lowland 簽發」(TE 鍵名原樣、volume_reconciled ✓)→ 按「簽發碳足跡憑證」→ 卡 2 出現,公開層的 <code>tc_ref</code> 旁一個鏈結圖示指向卡 1,欄位用 🟢🟡🔴 三色標;下方印出原始 token。口白:「TC 是認證機構開的但沒有碳;碳只有紗廠有帳單能證明;我們把兩條信任鏈綁在一起。」</p></div>
     <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
-      <p>DoD:<code>verify()</code> 通過;手動改 payload 一個 byte → 驗證失敗;presentation 只能挑出 SD 欄位,🔴 項目連 disclosure 都不存在。</p>
-      <div class="fallback"><b>保底:</b>簽發改成賽前 script 預簽,demo 只展示已簽好的結果卡——按鈕變成「載入憑證」,其餘不變。</div></div>
+      <p>DoD:兩張都 <code>verify()</code> 通過(分別用 CB、YARN 的 manifest 公鑰);手動改 tc_rcs 一個 byte 再簽 pcf_upstream → 幕 2 聚合回 <code>TC_REF_MISMATCH</code>;presentation 只能挑出 SD 欄位,🔴 項目連 disclosure 都不存在。</p>
+      <div class="fallback"><b>保底 (a)(交接檔三):</b>8/30 中午前 <code>tcRcs.ts</code> 未完成 → 不簽 TC 憑證,紗廠憑證的 <code>tc_ref = {tcNo, issuer_lei, hash(seed 的 TC JSON)}</code> 純參照,憑證卡標一行「本憑證不是 TC;TC 由 CB 簽發,此處以編號 + hash 引用」,治理缺口頁註明 CB 憑證未真簽;口白不變。再退一步:簽發改成賽前 script 預簽,按鈕變成「載入憑證」。</div></div>
     <div class="blk v3"><span class="lab">Δ v2 → v3</span>
-      <div class="delta"><b>改:</b>pcf_upstream → tc_carbon_upstream;CBAM 欄位(cn_code、specific_direct_embedded_emissions、production_route)→ TE TC 鍵名 + pcf_*;單位 tCO₂e/t → kgCO₂e/kg;A/B 差異不再在這一幕(紗憑證相同)。<b>不改:</b>簽發流程、三分法、SD 機制、Status List 引用。</div></div>
+      <div class="delta"><b>改:</b>CBAM 欄位 → pcf_* + 新的 CB 簽 tc_rcs(TE 鍵名);pcf_upstream 檔名保留、加 tc_ref;單位 tCO₂e/t → kgCO₂e/kg;A/B 差異不再在這一幕(紗憑證相同);CB 進主線。<b>不改:</b>簽發流程、三分法、SD 機制、Status List 引用。</div></div>
   </div>
 </div></section>
 
@@ -528,21 +548,22 @@ footer b{color:var(--ink)}
   <div class="act">
     <div class="act-head"><span class="num">2</span><h3>聚合 — 布廠疊出自己產品的憑證(三段)</h3><span class="when done">已完成 · 遷移改公式為三輸入</span></div>
     <div class="blk pos"><span class="lab">① 供應鏈位置</span>
-      <p>Tier-1 <b>內部</b>(Tab 2 + FAB 的 sandbox LE 鑰),但輸入來自<b>兩個外部組織</b>:紗廠的紗憑證、外包染整廠的 <code>pcf_dyeing</code>,加上自家織布的用電。這是命題「資料散落在內部系統與供應商之間」被接起來的位置:兩張外部憑證 + 內部製程 → 一張新憑證(給下游)。</p></div>
+      <p>Tier-1 <b>內部</b>(Tab 2 + FAB 的 sandbox LE 鑰),但輸入來自<b>三個外部組織</b>:認證機構的 TC 與布廠自己的 Scope Certificate、紗廠的碳憑證、外包染整廠的 <code>pcf_dyeing</code>,加上自家織布的用電。這是命題「資料散落在內部系統與供應商之間」被接起來的位置:三張外部憑證 + 一張 SC + 內部製程 → 一張新憑證(給下游)。CCS-102 D3.4:外包染整廠要嘛自己有 SC、要嘛列在布廠 SC 上受稽核——demo 走後者。</p></div>
     <div class="blk tech"><span class="lab">② 技術細節</span>
       <ul>
-        <li><b>新增 <code>pcf_dyeing</code></b>(DYE 的 sandbox LE 鑰簽):<code>pcf_direct = 48.6 MJ ÷ 鍋爐效率 × 燃料係數</code>、<code>pcf_indirect = 1.8 kWh × 0.474 × (1 − 綠電比)</code>。A 案天然氣 + 30% 綠電 = <b>3.63</b>;B 案燃煤 = <b>6.60</b>。鍋爐型號、燃料合約、化學品清冊、PPA 價格只留 hash。</li>
-        <li>FAB 以持有者身分讀兩張外部憑證的完整揭露,<b>消費前先以 manifest 公鑰驗章</b>(驗不過就 <code>CREDENTIAL_SIG_INVALID</code>,不得跳過),程式計算 <code>紗 3.00×1.0545 + 織布 2.4×0.474 + 染整 = 7.93 / 10.90</code>。</li>
-        <li>簽發 <b>pcf_aggregate</b>(同樣 SD-JWT):品牌層六欄(pcf_total、pcf_period、pcf_method、成分比例、verification、quantity_kg);三段拆解 <code>pcf_yarn / pcf_knitting / pcf_dyeing</code> 為稽核層 SD 且 <b>NEVER_DISCLOSABLE</b>;<code>precursor_refs</code> = 兩張外部憑證的 id + hash,<b>不含任何上游明細</b>;全廠產量、產能利用率、品牌別分配比、月度帳單承諾值只留 hash。</li>
+        <li><b>新增 <code>pcf_dyeing</code></b>(DYE 的 sandbox LE 鑰簽):公開層帶 <code>ccs_scope_ref = {sc_no, hash}</code> 指向布廠的 SC;<code>pcf_direct = 48.6 MJ ÷ 鍋爐效率 × 燃料係數</code>、<code>pcf_indirect = 1.8 kWh × 0.474 × (1 − 綠電比)</code>。A 案天然氣 + 30% 綠電 = <b>3.63</b>;B 案燃煤 = <b>6.60</b>。鍋爐型號、燃料合約、化學品清冊、PPA 價格只留 hash。</li>
+        <li><b>新增 <code>ccs_scope_cert</code></b>(v3.1;CB 的 sandbox LE 鑰簽,seed 時簽一次):布廠 SC <code>LLC-SC-2026-0142</code>,製程 針織,<code>associated_subcontractors = [彩合染整 / dyeing_finishing / audited]</code>,效期一年;全部公開層。</li>
+        <li>FAB 以持有者身分讀三張外部憑證的完整揭露,<b>消費前先以 manifest 公鑰驗章</b>(驗不過就 <code>CREDENTIAL_SIG_INVALID</code>,不得跳過),再核對兩條綁定:<code>pcf_upstream.tc_ref.hash == sha256(tc_rcs)</code>、seller/buyer LEI、認證重量 ≥ 批次數量(不符 → <code>TC_REF_MISMATCH</code>);<code>pcf_dyeing.ccs_scope_ref.sc_no == SC</code> 且 DYE LEI 在 SC 分包商清單、SC 有效(不符 → <code>CCS_SUBCONTRACTOR_NOT_LISTED</code> / <code>SCOPE_CERT_INVALID</code>)。然後程式計算 <code>紗 3.00×1.0545 + 織布 2.4×0.474 + 染整 = 7.93 / 10.90</code>。</li>
+        <li>簽發 <b>pcf_aggregate</b>(同樣 SD-JWT):品牌層六欄(pcf_total、pcf_period、pcf_method、成分比例、verification、quantity_kg);三段拆解 <code>pcf_yarn / pcf_knitting / pcf_dyeing</code> 為稽核層 SD 且 <b>NEVER_DISCLOSABLE</b>;<code>precursor_refs</code> = 三張外部憑證的 id + hash,<b>不含任何上游明細</b>;公開層帶 <code>ccs_scope_ref</code>,<code>tcProductStandardLabelGrade</code>(RCS 100)<b>由 tc_rcs 的 label grade + 有效 SC 推導</b>,不再自填;全廠產量、產能利用率、品牌別分配比、月度帳單承諾值只留 hash。</li>
         <li>疊層熱點圖 = 一個 &lt;svg&gt; 三段 rect(紗 / 織布 / 染整),寬度綁 API 回傳的真值與門檻 9.5,不要硬寫。</li>
       </ul></div>
     <div class="blk show"><span class="lab">③ 呈現方式</span>
-      <p>按「聚合簽發」→ 熱點圖長出三段(案 B 時染整段變紅、整條越過門檻線,一眼看出超標在外包染整的燃煤鍋爐)→ 新憑證卡出現。鏡頭停在一句話上:<b>「下游拿到的憑證裡沒有紗廠是誰、沒有染整廠帳單,只有兩個參照指紋」</b>——Tier-N 最小揭露傳遞就是這 20 秒。</p></div>
+      <p>按「聚合簽發」→ 熱點圖長出三段(案 B 時染整段變紅、整條越過門檻線,一眼看出超標在外包染整的燃煤鍋爐)→ 新憑證卡出現。鏡頭停在一句話上:<b>「下游拿到的憑證裡沒有紗廠是誰、沒有染整廠帳單,只有三個參照指紋和一張認證機構簽的 SC」</b>——Tier-N 最小揭露傳遞就是這 20 秒。</p></div>
     <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
-      <p>DoD:聚合值由程式算出、圖用真值渲染;換 seed(案 A→B)只有染整段變、圖跟著變;<code>precursor_refs</code> 恰兩筆且 hash 對得上入庫的 sd_jwt。</p>
-      <div class="fallback"><b>保底:</b>SVG 退成兩張靜態圖(A 版/B 版)切換;若受訪者回覆染整在自家,DYE 併入 FAB 自簽內部段憑證,公式與圖不變。</div></div>
+      <p>DoD:聚合值由程式算出、圖用真值渲染;換 seed(案 A→B)只有染整段變、圖跟著變;<code>precursor_refs</code> 恰三筆且 hash 對得上入庫的 sd_jwt;清空 SC 分包商清單重灌 → 聚合回 <code>CCS_SUBCONTRACTOR_NOT_LISTED</code>。</p>
+      <div class="fallback"><b>保底:</b>SVG 退成兩張靜態圖(A 版/B 版)切換;若受訪者回覆染整在自家,DYE 併入 FAB 自簽內部段憑證,SC 的製程改列針織 + 染整、分包商清單為空,公式與圖不變。</div></div>
     <div class="blk v3"><span class="lab">Δ v2 → v3</span>
-      <div class="delta"><b>改:</b>兩輸入 → 三輸入(多一張外部 pcf_dyeing);A/B 差異從上游移到染整段;台灣碳費欄位退場(布廠不繳碳費),改以再生能源比與 verification 表達;<code>precursor_ref</code> → <code>precursor_refs[]</code>。<b>不改:</b>消費前驗章、算術洩漏防線(H2)、熱點圖走伺服端真值。</div></div>
+      <div class="delta"><b>改:</b>兩輸入 → 三輸入 + SC(多外部 pcf_dyeing、CB 的 tc_rcs 與 ccs_scope_cert);A/B 差異從上游移到染整段;台灣碳費欄位退場,改以再生能源比與 verification 表達;<code>precursor_ref</code> → <code>precursor_refs[]</code> ×3;新增 tc_ref / ccs_scope_ref 核對與三個理由碼。<b>不改:</b>消費前驗章、算術洩漏防線(H2)、熱點圖走伺服端真值。</div></div>
   </div>
 </div></section>
 
@@ -595,22 +616,22 @@ footer b{color:var(--ink)}
   <div class="act">
     <div class="act-head"><span class="num">5</span><h3>門檻與付款閘道 — Agent 開單、財務主管簽字、付染整費</h3><span class="when todo">Phase 3 · 8/30 上午</span></div>
     <div class="blk pos"><span class="lab">① 供應鏈位置</span>
-      <p>回到 Tier-1 內部、面向<b>外包染整廠</b>方向(付款前檢查)。跑在布廠的 Agent-1(fab-workload 鑰),但最後一步的簽名權在<b>財務主管的 ECR 鑰</b>——workload 鑰 vs 角色鑰的分離就是這幕的主角,而且人的放行簽名也鏈回公司。訪談實況:品牌下規格、鞋廠付錢;布廠對上游一樣是「拿憑證的時點就是付款的時點」。</p></div>
+      <p>回到 Tier-1 內部、面向<b>外包染整廠</b>方向(付款前檢查)。口白統一成一句:<b>「品牌下規格、鞋廠付我們錢;我們付上游染整廠——這一幕演的是我們對上游的付款閘道。」</b>跑在布廠的 Agent-1(fab-workload 鑰),但最後一步的簽名權在<b>財務主管的 ECR 鑰</b>——workload 鑰 vs 角色鑰的分離就是這幕的主角,而且人的放行簽名也鏈回公司。鞋廠只在 roadmap 投影片出現,不得說 demo 有演。</p></div>
     <div class="blk tech"><span class="lab">② 技術細節</span>
       <ul>
         <li><b>M1</b> 由財務主管 ECR 鑰簽:scope_tools 沒有 sign_transaction;<code>allowed_counterparties = [DYE LEI]</code>、<code>carbon_max 9.5</code>、<code>max_amount 50,000 USD</code>、<code>delegate_kid = fab-workload</code>。</li>
-        <li><b>Cedar P3</b> 四要件:DYE 身分 ✓(vLEI 鏈 + pcf_dyeing 簽章/狀態)/ <code>pcf_aggregate.pcf_total ≤ 9.5</code> ✓(整數 gCO₂e/kg 比較:7925 ≤ 9500 &lt; 10899)/ 發票 ✓(DYE 簽的 invoice,USD 3,420 / 2,850 kg)/ 收款帳戶風險 ✓(risk_signals 表,雙來源才升級)。</li>
+        <li><b>Cedar P3</b> 五要件:DYE 身分 ✓(vLEI 鏈 + pcf_dyeing 簽章/狀態)/ <b>染整廠在布廠 SC 分包商清單 ✓</b>(v3.1,<code>context.subcontractor_listed</code>,後端算好的布林;不符 → <code>CCS_SUBCONTRACTOR_NOT_LISTED</code>)/ <code>pcf_aggregate.pcf_total ≤ 9.5</code> ✓(整數 gCO₂e/kg 比較:7925 ≤ 9500 &lt; 10899)/ 發票 ✓(DYE 簽的 invoice,USD 3,420 / 2,850 kg)/ 收款帳戶風險 ✓(risk_signals 表,雙來源才升級)。</li>
         <li><b>Dossier</b> = JWS by fab-workload,payload 含 <code>build_hash</code>(git commit)、version、四項檢查結果、三張輸入憑證的 hash。</li>
         <li>人簽 = <b>財務主管 ECR 鑰</b>(UI 標明「以財務主管 ECR 金鑰簽署」)、獨立確認對話框;付款一律 <b>mock USD 電匯指令 JSON</b>(付款人 FAB、收款人 DYE)→ 狀態 <code>RELEASED</code>;不建立錢包、RPC、鏈上交易。</li>
         <li>A/B/C/C′ 四組 seed 共用同一條管線切換;<b>E 不是資料組</b>,是幕 6「撤染整憑證後重跑 A」的狀態轉換。</li>
       </ul></div>
     <div class="blk show"><span class="lab">③ 呈現方式</span>
-      <p>案 A:四個檢查逐列亮綠 → Dossier 卡展開(鏡頭給 workload 簽章 + build_hash)→ 跳出<b>不同配色</b>的「財務主管簽核」對話框 → 狀態 RELEASED(mock 電匯 instruction id)。案 B:第二列紅 <code>CARBON_OVER_THRESHOLD</code>(染整段把整批推過 9.5),畫面上只剩「轉人工 / 要求染整廠補件」可按。案 C:風險表兩列 provider 並排 → <code>MULTI_SOURCE_CONFIRMED</code> 退回;C′ 一列 → <code>SINGLE_SOURCE_ONLY</code> 灰色「只記錄」。口白:「品牌零容忍、填錯零分——我們把『填錯』擋在廠內,不是被品牌打零分。」</p></div>
+      <p>案 A:五個檢查逐列亮綠 → Dossier 卡展開(鏡頭給 workload 簽章 + build_hash)→ 跳出<b>不同配色</b>的「財務主管簽核」對話框 → 狀態 RELEASED(mock 電匯 instruction id)。案 B:第二列紅 <code>CARBON_OVER_THRESHOLD</code>(染整段把整批推過 9.5),畫面上只剩「轉人工 / 要求染整廠補件」可按。案 C:風險表兩列 provider 並排 → <code>MULTI_SOURCE_CONFIRMED</code> 退回;C′ 一列 → <code>SINGLE_SOURCE_ONLY</code> 灰色「只記錄」。口白:「品牌零容忍、填錯零分——我們把『填錯』擋在廠內,不是被品牌打零分。」</p></div>
     <div class="blk dod"><span class="lab">④ 最小驗收與保底</span>
       <p>DoD:decision 與 audit 同交易;B/C 案 UI 上「放行」按鈕實際不存在(不是 disabled,是不渲染);測試鎖住 A 7925 過、B 10899 不過。</p>
       <div class="fallback"><b>保底:</b>錄影只拍 A + B,C′ 用口述;付款永遠停留在 mock 指令。</div></div>
     <div class="blk v3"><span class="lab">Δ v2 → v3</span>
-      <div class="delta"><b>改:</b>付款對象線材廠 → 染整廠;門檻 2.00 t/t → 9.5 kg/kg(gCO₂e 整數 9500);幣別 USDC → USD 電匯;發票由 DYE 簽。<b>不改:</b>P3 結構、Dossier、人簽 = 財務主管 ECR、風險雙來源、seed 四組。</div></div>
+      <div class="delta"><b>改:</b>付款對象線材廠 → 染整廠;門檻 2.00 t/t → 9.5 kg/kg(gCO₂e 整數 9500);幣別 USDC → USD 電匯;發票由 DYE 簽;P3 多一個布林 subcontractor_listed(有 CCS-102 D3.4 依據的一致性規則)。<b>不改:</b>P3 結構、Dossier、人簽 = 財務主管 ECR、風險雙來源、seed 四組。</div></div>
   </div>
 </div></section>
 
@@ -650,11 +671,11 @@ footer b{color:var(--ink)}
   <h2>一張表對齊:誰簽、誰驗、用什麼、遷移要改哪些檔</h2>
   <div class="tbl-wrap"><table>
     <tr><th>幕</th><th>簽 → 驗</th><th>憑證 / 金鑰</th><th>主要程式庫</th><th>相對 v2 要改的檔</th><th>保底</th></tr>
-    <tr><td><b>1 簽發</b></td><td>YARN → (之後所有人)</td><td class="m">tc_carbon_upstream(SD-JWT VC)/ YARN LE 鑰(sandbox)</td><td class="m">@sd-jwt/core · sd-jwt-vc</td><td class="m">creds/tcCarbonUpstream.ts · types.ts 欄位常數 · seed</td><td>賽前預簽</td></tr>
-    <tr><td><b>2 聚合</b></td><td>DYE → FAB;FAB → BRAND</td><td class="m"><span class="dye">pcf_dyeing / DYE LE 鑰(新)</span>;pcf_aggregate / FAB LE 鑰</td><td class="m">同上 + 手寫三段公式</td><td class="m">creds/pcfDyeing.ts(新)· pcfAggregate.ts · StackChart.tsx · routes/issue.ts</td><td>靜態 SVG</td></tr>
+    <tr><td><b>1 簽發</b></td><td>CB → 布廠(TC);YARN → (之後所有人)</td><td class="m"><span class="dye">tc_rcs / CB LE 鑰(v3.1)</span>;pcf_upstream(tc_ref)/ YARN LE 鑰</td><td class="m">@sd-jwt/core · sd-jwt-vc</td><td class="m">creds/tcRcs.ts(新)· pcfUpstream.ts(加 tc_ref)· types.ts · seed</td><td>賽前預簽</td></tr>
+    <tr><td><b>2 聚合</b></td><td>CB → FAB(SC);DYE → FAB;FAB → BRAND</td><td class="m"><span class="dye">ccs_scope_cert / CB LE 鑰(v3.1)</span>;<span class="dye">pcf_dyeing(ccs_scope_ref)/ DYE LE 鑰</span>;pcf_aggregate / FAB LE 鑰</td><td class="m">同上 + 手寫三段公式 + tc_ref / SC 核對</td><td class="m">creds/ccsScopeCert.ts(新)· pcfDyeing.ts(新)· pcfAggregate.ts · StackChart.tsx · routes/issue.ts · codes.ts(3 碼)</td><td>靜態 SVG</td></tr>
     <tr><td><b>3 查驗</b></td><td>BRAND 永續長 ECR 簽 M2;brand-workload 簽請求;BRAND 驗 FAB 簽章</td><td class="m">M2(JWT,jti + delegate_kid)/ ECR 鑰 + workload 鑰</td><td class="m">jose · cedar-wasm · @sd-jwt/present</td><td class="m">policy/claims.ts(M2 六欄)· creds/mandate.ts 常數 · BrandAgent.tsx chips</td><td>policy.ts 手寫,SD-JWT 不退</td></tr>
     <tr><td><b>4 攔截</b></td><td>—(請求被擋;REPLAY 同路徑)</td><td class="m">同上 / fab-workload 鑰簽稽核</td><td class="m">cedar-wasm</td><td class="m">policies/p2.cedar 註解 · claims.ts 機密名單 · 按鈕文字</td><td>必做,無保底</td></tr>
-    <tr><td><b>5 閘道</b></td><td>fab-workload 簽 Dossier;財務主管 ECR 簽放行;DYE 簽 invoice</td><td class="m">dossier(JWS)/ fab-workload + 財務主管 ECR;invoice / DYE LE 鑰</td><td class="m">jose · better-sqlite3</td><td class="m">routes/agent.ts · routes/human-sign.ts · HumanSignModal.tsx · p3.cedar(9500)</td><td>只錄 A+B;付款停在 mock</td></tr>
+    <tr><td><b>5 閘道</b></td><td>fab-workload 簽 Dossier;財務主管 ECR 簽放行;DYE 簽 invoice</td><td class="m">dossier(JWS)/ fab-workload + 財務主管 ECR;invoice / DYE LE 鑰</td><td class="m">jose · better-sqlite3</td><td class="m">routes/agent.ts · routes/human-sign.ts · HumanSignModal.tsx · p3.cedar(9500 + subcontractor_listed)</td><td>只錄 A+B;付款停在 mock</td></tr>
     <tr><td><b>6 稽核撤銷</b></td><td>DYE 撤憑證(主);FAB 財務撤 M1(輔)</td><td class="m">Token Status List JWT / FAB LE 鑰簽清單</td><td class="m">node:crypto · zlib · @owf/token-status-list</td><td class="m">scripts/revoke.ts · tamper.sh · verify-chain.ts · Audit.tsx(DEPENDS_REVOKED badge)</td><td>重簽重驗改口述</td></tr>
     <tr><td><b>+ 加映</b></td><td>CB → 採購 Agent</td><td class="m">slcp_dcc(JWT)/ CB LE 鑰</td><td class="m">複用全部</td><td class="m">seed 加一段(選配)</td><td>投影片講</td></tr>
   </table></div>
@@ -671,11 +692,32 @@ footer b{color:var(--ink)}
     <div class="day"><span class="d">8/30 下午</span><p>幕 6:tamper / 撤 pcf_dyeing → DEPENDS_REVOKED → 重簽重驗;錄影</p></div>
     <div class="day lock"><span class="d">8/30 21:00 內部截止</span><p><b>錄影與上傳,不可侵犯。</b>官方 23:59</p></div>
   </div>
-  <div class="bottomline"><b>退路先講好:</b>遷移在 branch 上做;若 8/30 中午 <code>make test</code> 還沒全綠,回 main 用鋼鐵版把幕 5/6 做完交件。<b>進度落後時的三幕保底:</b>幕 3(六欄)→ 幕 4(攔截)→ 幕 6(撤染整憑證回溯)——這三幕同時覆蓋比賽三面向(授權 / 邊界 / 追溯撤銷),其餘全是加分題。</div>
+  <div class="bottomline"><b>退路先講好(交接檔三 §2.5 定案):保底 = 紡織版少一幕,不得回退鋼鐵版</b>——混搭場景的簡報沒辦法自圓其說。遷移在 branch 上做;進度落後就砍幕,順序:幕 3(六欄)→ 幕 4(攔截)→ 幕 6(撤染整憑證回溯)三幕守骨架,它們同時覆蓋比賽三面向(授權 / 邊界 / 追溯撤銷),其餘全是加分題;幕 1 另有 (a) 保底。</div>
+</div></section>
+
+<!-- ================= 素材交付 ================= -->
+<section id="assets"><div class="wrap">
+  <p class="field-tag">素材交付(給 Quan / Yulia;對齊《260830 交接檔三》§2,依 v3.1 修正張數)</p>
+  <h2>分批交,不要等全部做完</h2>
+  <p class="sec-intro">幕 1–4 已完成,截圖<b>8/30 10:00 前</b>先給;幕 5–6 的 18:00 給;錄影 20:00。A 類缺任何一項簡報就做不完。</p>
+  <div class="tbl-wrap"><table>
+    <tr><th>#</th><th>交付物</th><th>規格(v3.1)</th><th>期限</th></tr>
+    <tr><td class="m">A-1</td><td>六項信任機制 × 畫面對照表</td><td>身份 / 授權 / 驗證 / 隱私 / 安全 / 問責 → 哪一幕、哪個畫面、影片第幾秒</td><td class="m">8/30 12:00</td></tr>
+    <tr><td class="m">A-2</td><td>分幕截圖(PNG ≥1920 寬,拍到理由碼那一格)</td><td>幕 1:<b>兩張卡</b>——TC 卡(Lowland 簽、volume_reconciled ✓)+ 碳憑證卡(🟢×7 / 🟡×8 / 🔴×3、tc_ref 鏈結圖示、raw token);幕 2:三段熱點圖 A(7.93)與 B(10.90 染整段紅、越線)各一張 + SC 卡;幕 3:presentation 六列 + 綠勾 + OFFLINE;幕 4:DENY + POLICY_P2_CONFIDENTIAL;幕 5:<b>五列</b>檢查亮綠 → Dossier(workload 簽章 + build_hash)→ 財務主管簽核 → RELEASED;B 案 CARBON_OVER_THRESHOLD 紅列;幕 6:verify-chain 全綠 → tamper 後 #42 起 FAIL;bit 條翻轉 + CREDENTIAL_REVOKED + Dossier 黃 badge;稽核帶特寫;verify-offline 終端</td><td class="m">幕 1–4 10:00;幕 5–6 18:00</td></tr>
+    <tr><td class="m">A-3</td><td>Demo 錄影</td><td>總長 ≤ 2:30;分幕獨立檔;分幕時間碼表</td><td class="m">8/30 20:00</td></tr>
+    <tr><td class="m">A-4</td><td>五泳道六幕流程圖原始檔</td><td>本頁 SVG(可編輯;深淺色皆可輸出)</td><td class="m">已交(本頁)</td></tr>
+    <tr><td class="m">A-5</td><td>技術棧與規模一句話</td><td>Node + Fastify + better-sqlite3 + Vite/React;9 張表;SD-JWT VC、Cedar、Token Status List(draft-ietf-oauth-status-list-21)、KERI/vLEI sandbox;無鏈、無 LLM、單機可跑</td><td class="m">已交</td></tr>
+    <tr><td class="m">A-6</td><td>repo 連結 + README 狀態</td><td>交件四項之一</td><td class="m">8/30 18:00</td></tr>
+    <tr><td class="m">A-7</td><td>最終數值定版表</td><td>紗 3.16 / 織 1.14 / 染整 3.63 · 6.60 / 合計 7.93 · 10.90 / 門檻 9.5;簡報數字與影片一字不差</td><td class="m">已定版(spec v3.1 §7–8)</td></tr>
+    <tr><td class="m">A-8</td><td>配套文件</td><td>spec v3.1、架構決策 -g、遷移清單、seed.v3.json、本頁</td><td class="m">已交(Research/files)</td></tr>
+    <tr><td class="m">B-9</td><td>成本側工程數字</td><td>presign 憑證張數(7 份呈現包 + 8 張應用層憑證)、簽發 / 驗證耗時 ms、單機規格、跑完一輪秒數</td><td class="m">8/30 18:00</td></tr>
+    <tr><td class="m">B-10</td><td>全部理由碼一覽</td><td>POLICY_P2_CONFIDENTIAL、CLAIM_NOT_IN_MANDATE、REPLAY_DETECTED、RECEIPT_INVALID、MANDATE_REVOKED / EXPIRED / SIG_INVALID、DELEGATE_KEY_MISMATCH、QUERY_CAP_EXCEEDED、CREDENTIAL_SIG_INVALID / EXPIRED / REVOKED、VLEI_CHAIN_BROKEN、<b>TC_REF_MISMATCH、CCS_SUBCONTRACTOR_NOT_LISTED、SCOPE_CERT_INVALID</b>、CARBON_OVER_THRESHOLD、MULTI_SOURCE_CONFIRMED、SINGLE_SOURCE_ONLY、RELEASE_APPROVED、AUDIT_CHAIN_TAMPERED、DEPENDS_REVOKED;<b>沒有 CONSISTENCY_FAILED</b>(一致性檢查未實作)</td><td class="m">已交</td></tr>
+    <tr><td class="m">C-12</td><td>什麼是真的、什麼是模擬的</td><td>真:SD-JWT 簽驗、Cedar 決策、Token Status List 撤銷、audit chain、vLEI sandbox 金鑰、CB 以 sandbox 鑰真簽 tc_rcs 與 SC。模擬:公司名 / LEI / 金額 / 係數為合成、CB 為虛構身分、付款止於 mock 指令、數量勾稽以宣告示意、幕 1 若採 (a) 保底則 CB 憑證未真簽</td><td class="m">8/30 18:00</td></tr>
+  </table></div>
 </div></section>
 
 <footer><div class="wrap">
-  <p><b>配套文件</b> — 欄位與數值以 <span style="font-family:var(--mono);font-size:12.5px">demo情境設定與合成資料規格-v3.md</span> 為準;架構與四項拍板見 <span style="font-family:var(--mono);font-size:12.5px">2026-08-26-專案架構決策.md(2026-08-29-f)</span>;程式面逐檔對照見 <span style="font-family:var(--mono);font-size:12.5px">2026-08-29-v2→v3遷移清單.md</span>;訪談正本《260826 Martin(鎰呈行)訪談紀錄 整理版》。本頁所有公司名、LEI、金額、數值皆為合成資料,以受訪廠為原型。</p>
+  <p><b>配套文件</b> — 欄位與數值以 <span style="font-family:var(--mono);font-size:12.5px">demo情境設定與合成資料規格-v3.md(v3.1)</span> 為準;制度依據 CCS-102 V3.1 E2.1 / D3.4;架構與拍板(ADR #11/#12)見 <span style="font-family:var(--mono);font-size:12.5px">2026-08-26-專案架構決策.md(2026-08-29-g)</span>;程式面逐檔對照見 <span style="font-family:var(--mono);font-size:12.5px">2026-08-29-v2→v3遷移清單.md</span>;訪談正本《260826 Martin(鎰呈行)訪談紀錄 整理版》。本頁所有公司名、LEI、金額、數值皆為合成資料,以受訪廠為原型。</p>
 </div></footer>
 
 <script>
