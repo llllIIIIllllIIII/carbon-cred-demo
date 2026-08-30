@@ -1,9 +1,14 @@
 import { useState } from 'react';
-import type { Manifest } from '../App';
+import type { DeepLinkCaseId, Manifest } from '../App';
 import { LeiBadge } from './badge';
 import { CredCard } from '../components/CredCard';
 
 type CaseId = 'A' | 'B';
+
+/** deep-link `case` 只支援 A/B 時才採用,C/Cp(幕 5 輔線案件)在本分頁一律 fallback 'A'。 */
+function clampCaseId(value: DeepLinkCaseId | null | undefined): CaseId {
+  return value === 'A' || value === 'B' ? value : 'A';
+}
 
 interface IssueResponse {
   id: string;
@@ -46,8 +51,23 @@ function describeVerifyFailure(reasonCode: string | undefined, error: string | u
  * 卡 1:CB(Lowland Certification)簽發之 tc_rcs(Transaction Certificate)——TC 本身沒有碳數據。
  * 卡 2:紗廠簽發之 pcf_upstream——公開層 tc_ref 綁定卡 1(hash 指紋),碳只有紗廠有帳單能證明。
  */
-export function Yarn({ manifest }: { manifest: Manifest | null }) {
-  const [caseId, setCaseId] = useState<CaseId>('A');
+export function Yarn({
+  manifest,
+  initialCase,
+  onCaseChange,
+}: {
+  manifest: Manifest | null;
+  /** deep-link(?tab=yarn&case=…)帶入之初始案件;僅掛載時採用一次,之後由分頁內選單接手。 */
+  initialCase?: DeepLinkCaseId | null;
+  /** 使用者於本分頁切換案件時回呼(App 層據此更新網址列)。 */
+  onCaseChange?: (caseId: DeepLinkCaseId) => void;
+}) {
+  const [caseId, setCaseId] = useState<CaseId>(() => clampCaseId(initialCase));
+
+  function handleCaseChange(next: CaseId) {
+    setCaseId(next);
+    onCaseChange?.(next);
+  }
 
   const [tcIssuance, setTcIssuance] = useState<IssueResponse | null>(null);
   const [tcBusy, setTcBusy] = useState(false);
@@ -156,7 +176,7 @@ export function Yarn({ manifest }: { manifest: Manifest | null }) {
 
       <label style={{ marginRight: 12 }}>
         案件:
-        <select value={caseId} onChange={(e) => setCaseId(e.target.value as CaseId)} disabled={busy} style={{ marginLeft: 6 }}>
+        <select value={caseId} onChange={(e) => handleCaseChange(e.target.value as CaseId)} disabled={busy} style={{ marginLeft: 6 }}>
           <option value="A">{CASE_LABELS.A}</option>
           <option value="B">{CASE_LABELS.B}</option>
         </select>

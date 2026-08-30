@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
-import type { Manifest, DiscloseEvent } from '../App';
+import type { DeepLinkCaseId, Manifest, DiscloseEvent } from '../App';
 import { LeiBadge } from './badge';
 
 type CaseId = 'A' | 'B';
+
+/** deep-link `case` 只支援 A/B 時才採用,C/Cp(幕 5 輔線案件,本分頁無此概念)一律 fallback 'A'。 */
+function clampCaseId(value: DeepLinkCaseId | null | undefined): CaseId {
+  return value === 'A' || value === 'B' ? value : 'A';
+}
 
 interface MandateStatusRef {
   idx: number;
@@ -122,8 +127,25 @@ function DecisionBadge({ decision }: { decision: 'PERMIT' | 'DENY' | 'REPLAY_DET
 }
 
 /** Tab 3 · Brand Agent(幕 3 委任查驗 ★核心 ＋ 幕 4 越界攔截 ★高潮 主場)。 */
-export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null; onDisclose: (e: DiscloseEvent) => void }) {
-  const [caseId, setCaseId] = useState<CaseId>('A');
+export function BrandAgent({
+  manifest,
+  onDisclose,
+  initialCase,
+  onCaseChange,
+}: {
+  manifest: Manifest | null;
+  onDisclose: (e: DiscloseEvent) => void;
+  /** deep-link(?tab=brand&case=…)帶入之初始案件;僅掛載時採用一次。 */
+  initialCase?: DeepLinkCaseId | null;
+  /** 使用者於本分頁切換案件時回呼(App 層據此更新網址列)。 */
+  onCaseChange?: (caseId: DeepLinkCaseId) => void;
+}) {
+  const [caseId, setCaseId] = useState<CaseId>(() => clampCaseId(initialCase));
+
+  function handleCaseChange(next: CaseId) {
+    setCaseId(next);
+    onCaseChange?.(next);
+  }
   const [mandateJwt, setMandateJwt] = useState<string | null>(null);
   const [mandateSummary, setMandateSummary] = useState<MandateSummary | null>(null);
   const [mandateBusy, setMandateBusy] = useState(false);
@@ -289,7 +311,7 @@ export function BrandAgent({ manifest, onDisclose }: { manifest: Manifest | null
       <div style={{ marginTop: 16, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <label>
           案件:
-          <select value={caseId} onChange={(e) => setCaseId(e.target.value as CaseId)} disabled={discloseBusy} style={{ marginLeft: 6 }}>
+          <select value={caseId} onChange={(e) => handleCaseChange(e.target.value as CaseId)} disabled={discloseBusy} style={{ marginLeft: 6 }}>
             <option value="A">案 A</option>
             <option value="B">案 B</option>
           </select>

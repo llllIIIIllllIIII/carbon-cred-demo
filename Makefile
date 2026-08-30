@@ -1,5 +1,5 @@
 # carbon-cred-demo — 統一 npm 與 make(不使用 pnpm)
-.PHONY: setup dev demo-reset test presign seed revoke tamper untamper verify-chain
+.PHONY: setup dev demo-reset test presign seed revoke tamper untamper verify-chain bench
 
 setup: ## 乾淨環境一鍵:venv + pip + npm i + presign + workload 鑰 + seed
 	python3 -m venv .venv
@@ -34,3 +34,6 @@ untamper: ## 幕 6:還原 make tamper 建立的 db 備份
 
 verify-chain: ## 幕 4/6:逐列重驗稽核鏈雜湊 + 簽章(竄改示範對照組)
 	npx tsx scripts/verify-chain.ts
+
+bench: ## Phase 4 B-9:實測 presign 張數 + 簽發/驗證耗時(真跑既有簽發/驗證程式碼,量測完以 seed 歸位)
+	npx tsx scripts/bench.ts

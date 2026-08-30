@@ -53,6 +53,7 @@ import { authorizeEmitReleaseCredential } from '../server/policy/cedar';
 import { PUBLIC_VLEI_STATE_FILE } from '../server/keys';
 import { CODES, DOSSIER_STATUS } from '../shared/codes';
 import { defaultIdxForLabels } from '../web/src/tabs/Audit';
+import { parseDeepLink, resolveNavState } from '../web/src/App';
 import { TAMPER_BACKUP_PATH } from './tamperBackup';
 import {
   PCF_UPSTREAM_PUBLIC_FIELDS,
@@ -4641,6 +4642,83 @@ async function main() {
     } finally {
       await app49.close();
     }
+  }
+
+  // Phase 4:deep-link 純函式單元測試(web/src/App.tsx parseDeepLink;brief §1.1 DoD)——
+  // 碼層驗證,無需瀏覽器/DOM,同 P2-6 defaultIdxForLabels 前例。
+  {
+    const yarnCase = parseDeepLink('?tab=yarn&case=B');
+    check('Phase 4 deep-link:?tab=yarn&case=B 解析為 { tab: "yarn", caseId: "B" }', yarnCase.tab === 'yarn' && yarnCase.caseId === 'B', JSON.stringify(yarnCase));
+
+    const gatewayCase = parseDeepLink('tab=gateway&case=Cp'); // 不帶開頭 ? 亦可解析
+    check(
+      'Phase 4 deep-link:無開頭 ? 之 "tab=gateway&case=Cp" 仍解析為 { tab: "gateway", caseId: "Cp" }',
+      gatewayCase.tab === 'gateway' && gatewayCase.caseId === 'Cp',
+      JSON.stringify(gatewayCase),
+    );
+
+    const auditOnly = parseDeepLink('?tab=audit');
+    check('Phase 4 deep-link:?tab=audit(無 case)解析為 { tab: "audit", caseId: null }', auditOnly.tab === 'audit' && auditOnly.caseId === null, JSON.stringify(auditOnly));
+
+    const empty = parseDeepLink('');
+    check('Phase 4 deep-link:空字串解析為 { tab: null, caseId: null }', empty.tab === null && empty.caseId === null, JSON.stringify(empty));
+
+    const unknownTab = parseDeepLink('?tab=shoe&case=A');
+    check('Phase 4 deep-link:不存在的分頁 key(非四分頁之一)→ tab 回 null(不得帶進不存在的分頁)', unknownTab.tab === null, JSON.stringify(unknownTab));
+
+    const unknownCase = parseDeepLink('?tab=brand&case=D');
+    check(
+      'Phase 4 deep-link:不存在的案件(非 A/B/C/Cp 之一)→ caseId 回 null(不得帶進不存在的案件)',
+      unknownCase.tab === 'brand' && unknownCase.caseId === null,
+      JSON.stringify(unknownCase),
+    );
+
+    const caseSensitive = parseDeepLink('?tab=Yarn&case=a');
+    check(
+      'Phase 4 deep-link:大小寫不符(Yarn/a)一律視為不合法 → 回 null,不得靜默塌成合法值(比照 INVALID_CASE_ID 模式)',
+      caseSensitive.tab === null && caseSensitive.caseId === null,
+      JSON.stringify(caseSensitive),
+    );
+
+    for (const t of ['yarn', 'gateway', 'brand', 'audit'] as const) {
+      const r = parseDeepLink(`?tab=${t}`);
+      check(`Phase 4 deep-link:四分頁 key 逐一可解析——${t}`, r.tab === t, JSON.stringify(r));
+    }
+    for (const c of ['A', 'B', 'C', 'Cp'] as const) {
+      const r = parseDeepLink(`?tab=gateway&case=${c}`);
+      check(`Phase 4 deep-link:四案件值逐一可解析——${c}`, r.caseId === c, JSON.stringify(r));
+    }
+  }
+
+  // Phase 4 — Codex 審查 P2-1 回歸鎖:resolveNavState(App.tsx 掛載初始化與 popstate 監聽
+  // 共用之 fallback 邏輯)——鎖住「tab 不合法時回退 'yarn'、case 不受 tab 合法性影響」的
+  // 語意,避免掛載路徑與 popstate 路徑各自 fallback 出現落差(碼層驗證,無需瀏覽器/DOM)。
+  {
+    const valid = resolveNavState('?tab=gateway&case=B');
+    check('Phase 4 P2-1:resolveNavState 對合法 tab/case 原樣採用', valid.tab === 'gateway' && valid.caseId === 'B', JSON.stringify(valid));
+
+    const badTab = resolveNavState('?tab=shoe&case=A');
+    check(
+      'Phase 4 P2-1:resolveNavState 對不合法 tab 回退預設分頁 yarn,case 仍照合法值採用(兩個欄位獨立 fallback)',
+      badTab.tab === 'yarn' && badTab.caseId === 'A',
+      JSON.stringify(badTab),
+    );
+
+    const empty = resolveNavState('');
+    check('Phase 4 P2-1:resolveNavState 對空字串回退 { tab: "yarn", caseId: null }(掛載初始狀態)', empty.tab === 'yarn' && empty.caseId === null, JSON.stringify(empty));
+
+    const auditOnly = resolveNavState('?tab=audit');
+    check('Phase 4 P2-1:resolveNavState 對 ?tab=audit(無 case)回傳 { tab: "audit", caseId: null }', auditOnly.tab === 'audit' && auditOnly.caseId === null, JSON.stringify(auditOnly));
+
+    // 模擬「同分頁內切案件後按上一頁」情境:popstate 前後 tab 相同、僅 case 改變——
+    // resolveNavState 必須忠實反映網址列的案件值(App.tsx 據此設 navEpoch 強制子分頁重掛)。
+    const backToA = resolveNavState('?tab=gateway&case=A');
+    const forwardToB = resolveNavState('?tab=gateway&case=B');
+    check(
+      'Phase 4 P2-1:同 tab 下 case 前後值皆忠實反映(popstate 來回 A/B 不會被錯誤 fallback 吃掉)',
+      backToA.tab === 'gateway' && backToA.caseId === 'A' && forwardToB.tab === 'gateway' && forwardToB.caseId === 'B',
+      JSON.stringify({ backToA, forwardToB }),
+    );
   }
 
   // 22) 一致性守門

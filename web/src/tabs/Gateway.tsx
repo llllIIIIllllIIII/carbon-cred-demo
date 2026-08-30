@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react';
-import type { Manifest, DiscloseEvent } from '../App';
+import type { DeepLinkCaseId, Manifest, DiscloseEvent } from '../App';
 import type { AssociatedSubcontractor, CcsScopeRef, PrecursorRef } from '../../../shared/types';
 import { LeiBadge } from './badge';
 import { StackChart } from '../components/StackChart';
 import { DenyStamp } from '../components/DenyStamp';
 
 type CaseId = 'A' | 'B';
+
+/** deep-link `case` 只支援 A/B 時才採用於聚合步驟,C/Cp(僅幕 5 輔線)一律 fallback 'A'。 */
+function clampAggregateCaseId(value: DeepLinkCaseId | null | undefined): CaseId {
+  return value === 'A' || value === 'B' ? value : 'A';
+}
 
 interface AggregateBreakdown {
   pcf_yarn: number;
@@ -158,16 +163,33 @@ const REASON_LABELS_P3: Record<string, string> = {
 };
 
 /** Tab 2 · 誠紡閘道(幕 2:聚合;架構決策 §4 POST /api/aggregate)。 */
-export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null; lastDisclose?: DiscloseEvent | null }) {
-  const [caseId, setCaseId] = useState<CaseId>('A');
+export function Gateway({
+  manifest,
+  lastDisclose,
+  initialCase,
+  onCaseChange,
+}: {
+  manifest: Manifest | null;
+  lastDisclose?: DiscloseEvent | null;
+  /** deep-link(?tab=gateway&case=…)帶入之初始案件;同時餵給聚合(A/B)與幕 5 Agent(A/B/C/Cp)兩個選單。 */
+  initialCase?: DeepLinkCaseId | null;
+  /** 聚合或幕 5 案件選單任一切換時回呼(App 層據此更新網址列)。 */
+  onCaseChange?: (caseId: DeepLinkCaseId) => void;
+}) {
+  const [caseId, setCaseId] = useState<CaseId>(() => clampAggregateCaseId(initialCase));
   const [result, setResult] = useState<AggregateResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [policies, setPolicies] = useState<PoliciesResponse | null>(null);
   const [scopeCert, setScopeCert] = useState<ScopeCertResponse['claims'] | null>(null);
 
+  function handleCaseChange(next: CaseId) {
+    setCaseId(next);
+    onCaseChange?.(next);
+  }
+
   // 幕 5:門檻與付款閘道。
-  const [agentCaseId, setAgentCaseId] = useState<AgentCaseId>('A');
+  const [agentCaseId, setAgentCaseId] = useState<AgentCaseId>(() => initialCase ?? 'A');
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [agentResult, setAgentResult] = useState<AgentRunResponse | null>(null);
@@ -221,6 +243,7 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
     setAgentError(null);
     setReleaseResult(null);
     setSignError(null);
+    onCaseChange?.(next);
   }
 
   async function handleRunAgent() {
@@ -276,7 +299,7 @@ export function Gateway({ manifest, lastDisclose }: { manifest: Manifest | null;
 
       <label style={{ marginRight: 12 }}>
         案件:
-        <select value={caseId} onChange={(e) => setCaseId(e.target.value as CaseId)} disabled={busy} style={{ marginLeft: 6 }}>
+        <select value={caseId} onChange={(e) => handleCaseChange(e.target.value as CaseId)} disabled={busy} style={{ marginLeft: 6 }}>
           <option value="A">{CASE_LABELS.A}</option>
           <option value="B">{CASE_LABELS.B}</option>
         </select>

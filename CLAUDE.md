@@ -82,3 +82,10 @@
 - **撤銷/稽核留痕**:所有 `revokeStatusIndex` 呼叫端(CLI `revoke.ts`、reissue supersede、`/api/audit/revoke`)一律 `appendAudit('admin:revoke', …)` 入鏈;`appendAudit` 本體(SELECT prev + INSERT)包在 `db.transaction().immediate()`,防並發分叉鏈(巢狀 immediate 於 better-sqlite3 不拋錯)。`recordCredentialHistory` 與 credential upsert 共用同一 immediate transaction(防半寫入使 Dossier 永久解不回)。
 - **tamper 備份可逆**:`tamper.ts` row-level JSON 側車備份以 `wx` 原子建立(已存在即拒、防覆寫破壞可逆性);先確認目標列存在才備份;無效 seq 報錯不動備份。
 - **殘留 LOW(單人 demo 邊角,需本機檔案寫入權,不阻擋)**:①`human-sign` 晚檢查讀檔到同步 CAS 之間,另一行程 revoke 的極短同步窗口理論競態——但只是 revoke/release 平手,已提交之撤銷必被兩道檢查擋下(PoC 證);②`withStatusListLock` stale(>5s)回收時互斥可能短暫鬆動(owner-token 已確保不誤刪他人鎖)。二者屬 localhost 單一操作者 demo 可接受範圍。
+
+## Codex 審查定案(2026-08-30;Phase 4 交付;末 phase 無後續約束,備查)
+
+- **deep-link 契約**:`web/src/App.tsx` `parseDeepLink`/`resolveNavState` 為純函式,只讀寫 URL 的 `tab`(yarn/gateway/brand/audit)與 `case`(A/B/C/Cp);**不得**把任何 claims、分項排放數字或 M2 六欄放進 URL(H2 防線)。掛載初始化與 `popstate`(上一頁/下一頁)共用 `resolveNavState` fallback,`navEpoch` 於 popstate 遞增以 `key` 強制子分頁重掛使案件選單同步網址。
+- **B-9 成本為實測**:`scripts/bench.ts`(`make bench`)實跑 `issuePcfUpstream`/`verifyCompactSdJwt`/`POST /api/verify` 量測,前後自動 seed 歸位(reset 置於外層 `finally`,任何拋錯路徑皆還原);README 數字附量測環境與方法,不得杜撰。
+- **理由碼一覽權威**:README B-10 表須與 `shared/codes.ts` 完全一致(現 40 碼),**不含 CONSISTENCY_FAILED**(一致性檢查只做投影片);新增/改碼時同步更新。
+- **交付誠信**:README C-12 誠實分「真(密碼學/vLEI/Status List/Cedar/稽核鏈皆真跑)」與「模擬(USD 電匯 mock JSON、合成帳戶、風險分數、推估係數、鞋廠/幕7/M4/一致性檢查只投影片)」;不宣稱 W3C VC 2.0 或 TE 認證;out-of-scope 一律標「未實作」。
